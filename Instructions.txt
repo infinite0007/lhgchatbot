@@ -1,0 +1,16 @@
+// Um pip installs nicht global zu machen wird venv verwendet und gewechselt
+python3 -m venv falcon_env
+
+falcon_env\Scripts\activate.bat         # unter Windows
+# source falcon_env/bin/activate        # unter Linux/macOS
+
+falcon found on huggingface under: https://huggingface.co/tiiuae/falcon-7b
+# Make sure git-lfs is installed (https://git-lfs.com)
+git lfs install
+git clone https://huggingface.co/tiiuae/falcon-7b
+#if errors like smudge filter lfs file happen and corrupting git just continue with:
+git restore --source=HEAD :/     inside the git project folder
+
+
+#start run_falcon_cpu.py with
+python run_falcon_cpu.py
