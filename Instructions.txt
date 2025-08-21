@@ -1,8 +1,8 @@
 // Um pip installs nicht global zu machen wird venv verwendet und gewechselt
-python3 -m venv falcon_env
+python -m venv .venv
 
-falcon_env\Scripts\activate.bat         # unter Windows
-# source falcon_env/bin/activate        # unter Linux/macOS
+.venv\Scripts\activate.bat              # unter Windows
+# source .venv/bin/activate        # unter Linux/macOS
 
 falcon found on huggingface under: https://huggingface.co/tiiuae/falcon-7b
 # Make sure git-lfs is installed (https://git-lfs.com)
