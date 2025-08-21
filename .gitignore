@@ -55,8 +55,18 @@ cover/
 *.mo
 *.pot
 
+# tokens/passwords
+.env
+.env.*
+
 # ai models
 falcon_env
+
+# canonical extractor
+data/
+rag/
+cag/
+finetune/
 
 # Django stuff:
 *.log
