@@ -1,0 +1,43 @@
+Schritt 1: Erstelle ein neues virtuelles Environment
+Öffne dein Terminal und navigiere in den gewünschten Projektordner:
+cd /pfad/zum/projektordner
+
+
+Dann erstelle das Environment:
+python -m venv env
+
+
+Dadurch wird ein Ordner namens env erstellt, der dein virtuelles Environment enthält.
+
+🟢 Schritt 2: Aktiviere das Environment
+Windows (CMD): env\Scripts\activate
+
+
+
+macOS/Linux: source env/bin/activate
+
+
+
+Nach der Aktivierung siehst du den Namen des Environments in deiner Konsole, z. B. (env).
+
+📦 Schritt 3: Installiere deine Pakete mit pip
+Jetzt kannst du alle benötigten Pakete installieren, z.B.:
+pip install numpy pandas matplotlib
+
+
+Wenn du später ein requirements.txt erstellen willst:
+pip freeze > requirements.txt
+
+
+🐍 Schritt 4: Erstelle dein Python-File
+Erstelle z.B. eine Datei namens main.py:
+touch main.py
+
+
+Oder direkt im Editor deiner Wahl (z. B. VS Code, PyCharm).
+
+✅ Schritt 5: Starte dein Script im Environment
+Solange das Environment aktiv ist, kannst du dein Script einfach ausführen:
+
+
+
