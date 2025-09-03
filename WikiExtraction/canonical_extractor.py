@@ -16,6 +16,7 @@ Installation
 
 Beispiele
 ---------
+  python canonical_extractor.py --space SWEIG --since 2024-01-01 --out data/raw/confluence.jsonl
   python canonical_extractor.py --space SPACEKEY --since 2024-01-01 --out data/raw/confluence.jsonl
   python canonical_extractor.py --all-spaces --since 2024-01-01 --out data/raw/conf_all.jsonl
 """
