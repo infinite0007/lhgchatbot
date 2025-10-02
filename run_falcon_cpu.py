@@ -7,7 +7,7 @@ def main():
 
     # 1. Tokenizer laden
     print("Lade Tokenizer ...")
-    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
 
     # 2. Modell in Float32 auf die CPU laden
     print("Lade Modell (Float32, CPU) ...")
@@ -15,7 +15,6 @@ def main():
         model_name,
         torch_dtype=torch.float32,
         device_map="cpu",            # erzwingt CPU-Ladevorgang über Accelerate
-        trust_remote_code=True,
     )
 
     # 3. Pipeline für Text-Generierung aufsetzen (ohne device-Argument)
