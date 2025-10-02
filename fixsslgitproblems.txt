@@ -1,0 +1,8 @@
+um Fehler wie: fatal: unable to access 'https://huggingface.co/FINGU-AI/RomboUltima-32B/tree/main/': SSL certificate problem: self-signed certificate in certificate chain
+zu beheben
+
+
+nutze: -c http.sslVerify=false
+also z. B.:
+git -c http.sslVerify=false clone https://huggingface.co/FINGU-AI/RomboUltima-32B
+anstelle nur git clone https://huggingface.co/FINGU-AI/RomboUltima-32B
