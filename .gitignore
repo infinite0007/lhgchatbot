@@ -67,6 +67,7 @@ data/
 rag/
 cag/
 finetune/
+finetunedmodels/
 
 # Django stuff:
 *.log
