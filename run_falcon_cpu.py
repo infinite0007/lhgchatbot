@@ -3,6 +3,9 @@ import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
 
 def main():
+    # test if cuda is available if not install the extended torch version with (change version at the end to fit to your cuda version): pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+    # print(torch.cuda.is_available())
+
     model_name = "./falcon-7b"
 
     # 1. Tokenizer laden
@@ -13,8 +16,13 @@ def main():
     print("Lade Modell (Float32, CPU) ...")
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
-        torch_dtype=torch.float32,
-        device_map="cpu",            # erzwingt CPU-Ladevorgang über Accelerate
+        # CPU-----------------------
+        # torch_dtype=torch.float32,
+        # device_map="cpu",            # erzwingt CPU-Ladevorgang über Accelerate
+
+        # GPU-----------------------
+        torch_dtype=torch.bfloat16,  # oder torch.float16 da effizienter bei gpu
+        device_map="auto",           # automatisch auf GPU laden bei auto
     )
 
     # 3. Pipeline für Text-Generierung aufsetzen (ohne device-Argument)
