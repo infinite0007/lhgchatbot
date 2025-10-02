@@ -6,7 +6,8 @@ def main():
     # test if cuda is available if not install the extended torch version with (change version at the end to fit to your cuda version): pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
     # print(torch.cuda.is_available())
 
-    model_name = "./falcon-7b"
+    model_name = "FinetuneLLM/finetunedmodels/falcon7b-lora-out/merged-model"
+    # model_name = "./falcon-7b"
 
     # 1. Tokenizer laden
     print("Lade Tokenizer ...")
