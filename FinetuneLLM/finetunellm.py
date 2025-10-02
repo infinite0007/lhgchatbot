@@ -1,42 +1,42 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-import os, json, math
+import os, json
 from typing import Dict, Any, List
-from datasets import load_dataset, Dataset, DatasetDict
 import torch
+from datasets import Dataset, DatasetDict
 from transformers import (
     AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig,
-    TrainingArguments
+    TrainingArguments, Trainer, DataCollatorForLanguageModeling
 )
-from peft import LoraConfig, get_peft_model, TaskType
-from trl import SFTTrainer, SFTConfig
+from peft import LoraConfig, get_peft_model, TaskType, prepare_model_for_kbit_training
 
 # ------------------------------
 # Konfiguration
 # ------------------------------
-BASE_MODEL = os.environ.get("BASE_MODEL", "../falcon-7b")
-DATA_PATH  = os.environ.get("DATA_PATH", "dataset/ecommercefaq.jsonl")  # json array oder .jsonl
+BASE_MODEL = os.environ.get("BASE_MODEL", "../falcon-7b")  # lokaler Ordner oder "tiiuae/falcon-7b"
+DATA_PATH  = os.environ.get("DATA_PATH", "datasets/ecommercefaq.json")  # .json (Array) oder .jsonl
 OUTPUT_DIR = os.environ.get("OUTPUT_DIR", "finetunedmodels/falcon7b-lora-out")
-USE_QLORA  = True  # 4-bit QLoRA
-RANK       = 16    # LoRA-Rank (8..64 gängig)
-ALPHA      = 32
-DROPOUT    = 0.05
-MAX_SEQ_LEN= 2048  # Falcon-7B konfig; ggf. kleiner stellen bei wenig VRAM
-BATCH_SIZE = 1
-GRAD_ACCUM = 8
-EPOCHS     = 2
-LR         = 2e-4
-WARMUP     = 0.05
-LOG_STEPS  = 10
+
+USE_QLORA   = True     # 4-bit QLoRA
+RANK        = 16
+ALPHA       = 32
+DROPOUT     = 0.05
+MAX_SEQ_LEN = 2048
+BATCH_SIZE  = 1
+GRAD_ACCUM  = 8
+EPOCHS      = 2
+LR          = 2e-4
+WARMUP      = 0.05
+LOG_STEPS   = 10
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # ------------------------------
-# Tokenizer laden
+# Tokenizer
 # ------------------------------
 print(">> Lade Tokenizer…")
-tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL, trust_remote_code=True)
+tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL)
 if tokenizer.pad_token is None:
     tokenizer.pad_token = tokenizer.eos_token
 
@@ -49,75 +49,62 @@ if USE_QLORA:
         load_in_4bit=True,
         bnb_4bit_use_double_quant=True,
         bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.bfloat16
+        bnb_4bit_compute_dtype=torch.bfloat16,
     )
 
 # ------------------------------
-# Basismodell laden
+# Modell
 # ------------------------------
 print(">> Lade Basismodell…")
 model = AutoModelForCausalLM.from_pretrained(
     BASE_MODEL,
-    trust_remote_code=True,
     quantization_config=bnb_config if USE_QLORA else None,
     torch_dtype=torch.bfloat16 if not USE_QLORA else None,
-    device_map="auto"
+    device_map="auto",
 )
 
-# Empfohlen für PEFT/QLoRA
+# Empfehlenswerte Trainings-Flags
+model.config.use_cache = False  # wichtig bei Grad-Checkpointing
 if hasattr(model, "gradient_checkpointing_enable"):
     model.gradient_checkpointing_enable()
 
+# Für k-bit Training vorbereiten (fixiert LayerNorm etc.)
+if USE_QLORA:
+    model = prepare_model_for_kbit_training(model)
+
 # ------------------------------
-# LoRA/PEFT konfigurieren
-# Falcon: target_modules i.d.R. ["query_key_value"]
+# PEFT / LoRA
 # ------------------------------
 lora_cfg = LoraConfig(
     task_type=TaskType.CAUSAL_LM,
     r=RANK,
     lora_alpha=ALPHA,
     lora_dropout=DROPOUT,
-    target_modules=["query_key_value"]
+    target_modules=["query_key_value"],  # Falcon-7B
 )
 model = get_peft_model(model, lora_cfg)
 
 # ------------------------------
-# Datensatz laden & normalisieren
-# Unterstützt:
-# - JSON-Lines (.jsonl): pro Zeile ein Objekt
-# - JSON-Array (.json): Liste von Objekten
-# Erwartete Felder (irgendeines der Paare):
-#   (question, answer) | (instruction, output) | (input, output) | (prompt, response)
+# Daten laden & normalisieren (QA-Paare & Fallback "text")
 # ------------------------------
-def _detect_qa_keys(ex: Dict[str, Any]) -> Dict[str, str]:
-    candidates = [
-        ("question", "answer"),
-        ("instruction", "output"),
-        ("input", "output"),
-        ("prompt", "response"),
-        ("src", "tgt"),
-    ]
-    for qk, ak in candidates:
-        if qk in ex and ak in ex and isinstance(ex[qk], str) and isinstance(ex[ak], str):
-            return {"q": qk, "a": ak}
-    # Fallback: wenn es nur "text" gibt -> Einzeiler-SFT
-    if "text" in ex and isinstance(ex["text"], str):
-        return {"q": "text", "a": None}
-    return {"q": None, "a": None}
-
 def _load_any_json(path: str) -> List[Dict[str, Any]]:
     if path.endswith(".jsonl"):
         rows = []
         with open(path, "r", encoding="utf-8") as f:
             for line in f:
-                line=line.strip()
-                if not line: continue
-                rows.append(json.loads(line))
+                line = line.strip()
+                if not line: 
+                    continue
+                # falls die Datei aus Versehen ein Array enthält
+                if line.startswith("[") and line.endswith("]"):
+                    rows.extend(json.loads(line))
+                else:
+                    rows.append(json.loads(line))
         return rows
     else:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
-            assert isinstance(data, list), "dataset.json muss ein JSON-Array oder .jsonl sein."
+            assert isinstance(data, list), "dataset.json muss ein JSON-Array sein (oder .jsonl Zeilen)."
             return data
 
 print(">> Lade Daten…")
@@ -125,36 +112,64 @@ raw = _load_any_json(DATA_PATH)
 if not raw:
     raise RuntimeError("Dataset ist leer.")
 
-keys = _detect_qa_keys(raw[0])
-if keys["q"] is None:
-    raise RuntimeError("Konnte keine passenden Felder finden. Erwartet z.B. (question/answer) oder (instruction/output).")
+# Erlaubte Paare (QA-Stil) ODER 'text'
+pairs = [
+    ("question", "answer"),
+    ("instruction", "output"),
+    ("input", "output"),
+    ("prompt", "response"),
+    ("src", "tgt"),
+]
 
-def build_prompt(ex: Dict[str, Any]) -> str:
-    if keys["a"] is None:
-        # Einzeiler (rein SFT): Model lernt von vollständigen Beispielen
-        return ex[keys["q"]]
-    user = ex[keys["q"]].strip()
-    assistant = ex[keys["a"]].strip()
-    # simples, modellagnostisches Chat-Format
-    return f"<human>: {user}\n<assistant>: {assistant}"
+def to_text(ex: Dict[str, Any]) -> Dict[str, str] | None:
+    # QA-Paare zuerst
+    for qk, ak in pairs:
+        q, a = ex.get(qk), ex.get(ak)
+        if isinstance(q, str) and isinstance(a, str):
+            return {"text": f"<human>: {q.strip()}\n<assistant>: {a.strip()}"}
+    # Fallback: reines SFT-Textfeld
+    if isinstance(ex.get("text"), str):
+        return {"text": ex["text"]}
+    return None
 
-normalized = [{"text": build_prompt(ex)} for ex in raw if isinstance(ex.get(keys["q"], ""), str)]
+normalized = []
+for ex in raw:
+    item = to_text(ex)
+    if item is not None:
+        normalized.append(item)
 
-ds = Dataset.from_list(normalized)
-ds = ds.shuffle(seed=42)
+if not normalized:
+    raise RuntimeError("Keine passenden QA-Felder oder 'text' gefunden.")
+
+ds = Dataset.from_list(normalized).shuffle(seed=42)
 splits = ds.train_test_split(test_size=min(0.05, max(1/len(ds), 0.01)), seed=42)
 dataset = DatasetDict({"train": splits["train"], "eval": splits["test"]})
 
 # ------------------------------
-# TRL SFTTrainer – packt effizient und ist SOTA in HuggingFace-Ökosystem
+# Tokenisierung für Causal LM
+# ------------------------------
+def _tok(batch):
+    return tokenizer(
+        batch["text"],
+        truncation=True,
+        max_length=MAX_SEQ_LEN,
+        padding="max_length",
+        return_attention_mask=True,
+    )
+
+print(">> Tokenisiere…")
+tokenized = DatasetDict({
+    "train": dataset["train"].map(_tok, batched=True, remove_columns=["text"]),
+    "eval":  dataset["eval"].map(_tok,  batched=True, remove_columns=["text"]),
+})
+
+# DataCollator: erstellt labels = input_ids (mit -100 auf Padding)
+dc = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
+
+# ------------------------------
+# TrainingArguments (kompatibel)
 # ------------------------------
 print(">> Konfiguriere Training…")
-# Achtung: 'packing=True' concateniert Beispiele bis MAX_SEQ_LEN -> bessere Auslastung
-sft_config = SFTConfig(
-    max_seq_length=MAX_SEQ_LEN,
-    packing=True,
-)
-
 training_args = TrainingArguments(
     per_device_train_batch_size=BATCH_SIZE,
     gradient_accumulation_steps=GRAD_ACCUM,
@@ -162,43 +177,41 @@ training_args = TrainingArguments(
     learning_rate=LR,
     warmup_ratio=WARMUP,
     logging_steps=LOG_STEPS,
-    evaluation_strategy="steps",
-    eval_steps=max(LOG_STEPS, 50),
-    save_strategy="steps",
     save_steps=max(LOG_STEPS, 200),
     save_total_limit=2,
-    bf16=True,                         # bfloat16 (auch bei QLoRA ok, compute_dtype bfloat16)
-    optim="paged_adamw_8bit",          # Memory-sparend; klassischer QLoRA-Default
+    bf16=True,
+    optim="adamw_torch",        # robust; falls vorhanden kannst du später "paged_adamw_8bit" nehmen
     lr_scheduler_type="cosine",
-    gradient_checkpointing=True,
     output_dir=OUTPUT_DIR,
-    report_to="none"
+    report_to=[],               # vermeidet alte "none"-Inkompatibilitäten
 )
 
-# Optional Speed-Stack (Unsloth) – auskommentiert lassen, wenn nicht installiert
-# from unsloth import FastLanguageModel
-# model = FastLanguageModel.wrap_peft_model(model)
-
-trainer = SFTTrainer(
+# ------------------------------
+# Trainer
+# ------------------------------
+trainer = Trainer(
     model=model,
-    train_dataset=dataset["train"],
-    eval_dataset=dataset["eval"],
     args=training_args,
-    tokenizer=tokenizer,
-    peft_config=lora_cfg,
-    dataset_text_field="text",
-    sft_config=sft_config,
+    train_dataset=tokenized["train"],
+    # eval_dataset=tokenized["eval"],  # bei Bedarf aktivieren, wenn dein HF das stabil unterstützt
+    data_collator=dc,
+    processing_class=tokenizer, # neu anstelle alt: tokenizer=tokenizer, ist gewollt.
 )
 
+# ------------------------------
+# Train
+# ------------------------------
 print(">> Starte Training…")
 trainer.train()
 
+# ------------------------------
+# Speichern
+# ------------------------------
 print(">> Speichere Adapter…")
 trainer.model.save_pretrained(os.path.join(OUTPUT_DIR, "adapter"))
 tokenizer.save_pretrained(OUTPUT_DIR)
 
-# Optional: Merge Adapter in das Basismodell (für einfaches Deployment ohne PEFT)
-# Achtung: erhöht Dateigröße & VRAM-Bedarf zur Inferenz.
+# Optional: merge Adapter in Basismodell
 try:
     merged_path = os.path.join(OUTPUT_DIR, "merged-model")
     os.makedirs(merged_path, exist_ok=True)
