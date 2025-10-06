@@ -225,4 +225,14 @@ print(">> Speichere Adapter …")
 model.save_pretrained(os.path.join(OUTPUT_DIR, "adapter"))
 tokenizer.save_pretrained(OUTPUT_DIR)
 
+# Merge Adapter in Basis-Modell und speichere auch das gemergte Modell
+try:
+    print(">> Merge Adapter und speichere vollständiges Modell …")
+    merged_model = trainer.model.merge_and_unload()
+    merged_dir = os.path.join(OUTPUT_DIR, "merged_model")
+    merged_model.save_pretrained(merged_dir)
+    tokenizer.save_pretrained(merged_dir)
+except Exception as e:
+    print(f"Merge fehlgeschlagen: {e}")
+
 print(">> Fertig.")
