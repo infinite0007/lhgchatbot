@@ -225,7 +225,7 @@ print(">> Speichere Adapter …")
 model.save_pretrained(os.path.join(OUTPUT_DIR, "adapter"))
 tokenizer.save_pretrained(OUTPUT_DIR)
 
-# Merge Adapter in Basis-Modell und speichere auch das gemergte Modell
+# Merge Adapter in Basis-Modell und speichere auch das gemergte Modell ist zum Aufrufen nicht nätig, da da Adapter ausreichen aber zum Beispiel zum Quantifizieren braucht man das Modell selber
 try:
     print(">> Merge Adapter und speichere vollständiges Modell …")
     merged_model = trainer.model.merge_and_unload()
