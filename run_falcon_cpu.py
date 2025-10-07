@@ -7,17 +7,19 @@ from peft import PeftModel
 # ------------------------------
 # Initialisierung
 # ------------------------------
-base_model_name = "./Falcon3-1B-Base"
-adapters_path   = "FinetuneLLM/finetunedmodels/Falcon3-1B-Base-lora-ecommerce-out/adapter"
+model_name   = "FinetuneLLM/finetunedmodels/Falcon3-1B-Base-lora-pirate-out/merged_model"
+#model_name = "./Falcon3-1B-Base"
+#adapters_path   = "FinetuneLLM/finetunedmodels/Falcon3-1B-Base-lora-pirate-out/adapter"
+
 
 print("Lade Tokenizer ...")
-tokenizer = AutoTokenizer.from_pretrained(base_model_name)
+tokenizer = AutoTokenizer.from_pretrained(model_name)
 if tokenizer.pad_token is None:
     tokenizer.pad_token = tokenizer.eos_token
 
 print("Lade Modell ...")
 model = AutoModelForCausalLM.from_pretrained(
-    base_model_name,
+    model_name,
 
     # CPU-----------------------
     # dtype=torch.float32,
@@ -28,13 +30,13 @@ model = AutoModelForCausalLM.from_pretrained(
     device_map="auto",     # automatisch auf GPU laden bei auto
 )
 
-print("Lade Adapter ...")
-model = PeftModel.from_pretrained(model, adapters_path)
+#print("Lade Adapter ...") # Weglassen wenn man ohne Adapter läd.
+#model = PeftModel.from_pretrained(model, adapters_path)
 
 # Pipeline
 gen = pipeline(
     "text-generation",
-    model=model,
+    model=model, # Ändern zu merged Modell wenn man ohne Adapter läd.
     tokenizer=tokenizer,
 )
 
@@ -55,7 +57,7 @@ while True:
     # Inferenz
     outputs = gen(
         prompt,
-        max_new_tokens=200,
+        max_new_tokens=300,
         do_sample=False,
         temperature=0.0,
         top_p=0.7,
