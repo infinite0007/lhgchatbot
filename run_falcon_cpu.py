@@ -7,9 +7,10 @@ from peft import PeftModel
 # ------------------------------
 # Initialisierung
 # ------------------------------
-#model_name   = "FinetuneLLM/finetunedmodels/Falcon3-1B-Base-lora-pirate-origin-out/merged_model"
-model_name = "./Falcon3-1B-Base"
-adapters_path   = "FinetuneLLM/finetunedmodels/Falcon3-1B-Base-lora-pirate-origin-out/adapter"
+model_name   = "FinetuneLLM/finetunedmodels/Falcon3-1B-Base-lora-pirate-out/merged_model"
+# Wichtig wenn man nur die Adapter und das Base Modell nimmt - denn die eos/pad vom Adapter sind andere als wie vom Base Modell deswegen stoppt er nicht (keine Übereinstimmung) könnte man lösen mit aber unnötig: EOS_TOKEN = "<|endoftext|>" & PAD_TOKEN = "<|pad|>" & eos_id = tokenizer.convert_tokens_to_ids(EOS_TOKEN) & pad_id = tokenizer.convert_tokens_to_ids(PAD_TOKEN)
+#model_name = "./Falcon3-1B-Base"
+#adapters_path   = "FinetuneLLM/finetunedmodels/Falcon3-1B-Base-lora-pirate-out/adapter"
 
 
 print("Lade Tokenizer ...")
@@ -30,13 +31,13 @@ model = AutoModelForCausalLM.from_pretrained(
     device_map="auto",     # automatisch auf GPU laden bei auto
 )
 
-print("Lade Adapter ...") # Weglassen wenn man ohne Adapter läd.
-model = PeftModel.from_pretrained(model, adapters_path)
+#print("Lade Adapter ...") # Weglassen wenn man ohne Adapter läd.
+#model = PeftModel.from_pretrained(model, adapters_path)
 
 # Pipeline
 gen = pipeline(
     "text-generation",
-    model=model, # Ändern zu merged Modell wenn man ohne Adapter läd.
+    model=model,
     tokenizer=tokenizer,
 )
 
@@ -57,7 +58,7 @@ while True:
     # Inferenz
     outputs = gen(
         prompt,
-        max_new_tokens=300,
+        max_new_tokens=400,
         do_sample=False,
         temperature=0.0,
         top_p=0.7,
