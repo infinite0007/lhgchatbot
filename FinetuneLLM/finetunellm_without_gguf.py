@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-
+# Eigene Methode ohne unsloth - dabei wird das Modell zwar erstellt und kann benutzt werden aber niemals Quantifiziert da leider Infos verloren gehen weshalb das gguf builden hier immer fehlschlägt. Also wenn man gguf quantifizieren möchte den finetunellm_unsloth_gguf.py benutzen (dafür mehr installationsaufwand mit unsloth).
 import os, json
 from typing import Dict, Any, List, Optional
 import torch
