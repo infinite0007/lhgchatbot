@@ -3,5 +3,5 @@ trl
 unsloth
 peft
 
-# Deine feste Torch-Version mit CUDA (ersetze cu128 durch die passende CUDA-Suffix, falls nötig) also mit: pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cu128
+# Deine feste Torch-Version mit CUDA davor CUDA Toolkit 13. installieren (ersetze cu128 durch die passende CUDA-Suffix, falls nötig) also mit: pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cu128
 torch==2.8.0+cu128
