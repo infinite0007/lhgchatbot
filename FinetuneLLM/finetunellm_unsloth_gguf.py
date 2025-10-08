@@ -1,6 +1,12 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 # Dieses File kann am Ende mit Hilfe unsloth als GGUF konvertiert werden.
+# If you have Huggingface - SSL errors install: pip install python-certifi-win32
+# https://github.com/ggml-org/llama.cpp bei release schauen dass man die convert.py Dateien hat und die .exe sonst von build/bin in llama.cpp kopieren. Also die einen Files sind in Main die anderen in Release halt zusammen suchen in root kopieren dann
+# Nachdem dieses Skript aufgerufen wurde navigiert man in den Ordner merged_model_prepared_gguf und kopiert dessen Link
+# clone normales llama.cpp mit: git clone https://github.com/ggml-org/llama.cpp.git     darin befinden sich die Skripte - falls man die .exen will für Server oder Chat einfach das Release runterladen.
+# geht dann mit cd in llama.cpp und ruft auf: python convert_hf_to_gguf.py "C:\Users\lhglij1\OneDrive - Liebherr\Desktop\Master\lhgchatbot\FinetuneLLM\finetunedmodels\Falcon3-1B-Base-lora-pirate-origin-out\ggufmerged" --outfile name.gguf
+# das kann man direkt benutzen und zum Beispiel mit koboldcpp starten (das File wird im llama.cpp gespeichert)
 from unsloth import FastLanguageModel
 
 # Danach erst TRL / SFTTrainer
