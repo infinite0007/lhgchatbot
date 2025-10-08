@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-# Dieses File kann am Ende mit Hilfe unsloth als GGUF konvertiert werden.
+# Dieses File kann am Ende mit Hilfe unsloth als GGUF konvertiert werden. Siehe: https://docs.unsloth.ai/get-started/beginner-start-here Aber alles was man braucht ist pip install unsloth, das cuda toolkit installiert, torch mit cuda version installiert
 # If you have Huggingface - SSL errors install: pip install python-certifi-win32
 # https://github.com/ggml-org/llama.cpp bei release schauen dass man die convert.py Dateien hat und die .exe sonst von build/bin in llama.cpp kopieren. Also die einen Files sind in Main die anderen in Release halt zusammen suchen in root kopieren dann
 # Nachdem dieses Skript aufgerufen wurde navigiert man in den Ordner merged_model_prepared_gguf und kopiert dessen Link
@@ -31,7 +31,7 @@ from unsloth import FastLanguageModel
 # ------------------------------
 BASE_MODEL = os.environ.get("BASE_MODEL", "../Falcon3-1B-Base")
 DATA_PATH = os.environ.get("DATA_PATH", "datasets/trainpirate.jsonl")  # unterstützt .json oder .jsonl
-OUTPUT_DIR = os.environ.get("OUTPUT_DIR", "finetunedmodels/Falcon3-1B-Base-lora-new-pirate-out")
+OUTPUT_DIR = os.environ.get("OUTPUT_DIR", "finetunedmodels/Falcon3-1B-Base-lora-unsloth-pirate-out")
 
 USE_QLORA = True    # 4-bit QLoRA Aktiviert die QLoRA-Methode (Low-Rank Adapters + 4-Bit Quantisierung) / Wenn du das ausschaltest, trainierst du klassisch auf ganzen Modellgewichten; das braucht deutlich mehr Speicher und Rechenzeit
 RANK = 16           # Die Rang-Dimension der LoRA-Adapter — d.h. statt ganze Gewichtsmatri­zen zu trainieren, trainierst du zwei kleinere „low-rank“ Matrizen der Dimension rank. Je höher der Rang, desto mehr Anpassungsfähigkeit haben die Adapter. / hoch = Mehr Kapazität, das Modell kann komplexere Anpassungen lernen / nieder = Weniger Ausdrucksfähigkeit, der Adapter ist beschränkter / Wenn zu hoch, kann es Overfitting begünstigen oder Speicher/RAM-Bedarf wachsen
