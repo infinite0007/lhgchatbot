@@ -68,6 +68,7 @@ rag/
 cag/
 finetune/
 finetunedmodels/
+llama.cpp/
 
 # Django stuff:
 *.log

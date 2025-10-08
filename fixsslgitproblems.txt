@@ -6,3 +6,12 @@ nutze: -c http.sslVerify=false
 also z. B.:
 git -c http.sslVerify=false clone https://huggingface.co/FINGU-AI/RomboUltima-32B
 anstelle nur git clone https://huggingface.co/FINGU-AI/RomboUltima-32B
+
+global ausschalten aber nicht empfohlen:
+git config --global http.sslVerify false
+
+
+klappt aber nicht immer.
+
+Mit nachfolgendem kann man das globale git config bearbeiten:
+git config --global --edit

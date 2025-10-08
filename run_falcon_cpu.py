@@ -7,9 +7,9 @@ from peft import PeftModel
 # ------------------------------
 # Initialisierung
 # ------------------------------
-model_name   = "FinetuneLLM/finetunedmodels/Falcon3-1B-Base-lora-pirate-out/merged_model"
-#model_name = "./Falcon3-1B-Base"
-#adapters_path   = "FinetuneLLM/finetunedmodels/Falcon3-1B-Base-lora-pirate-out/adapter"
+#model_name   = "FinetuneLLM/finetunedmodels/Falcon3-1B-Base-lora-pirate-origin-out/merged_model"
+model_name = "./Falcon3-1B-Base"
+adapters_path   = "FinetuneLLM/finetunedmodels/Falcon3-1B-Base-lora-pirate-origin-out/adapter"
 
 
 print("Lade Tokenizer ...")
@@ -30,8 +30,8 @@ model = AutoModelForCausalLM.from_pretrained(
     device_map="auto",     # automatisch auf GPU laden bei auto
 )
 
-#print("Lade Adapter ...") # Weglassen wenn man ohne Adapter läd.
-#model = PeftModel.from_pretrained(model, adapters_path)
+print("Lade Adapter ...") # Weglassen wenn man ohne Adapter läd.
+model = PeftModel.from_pretrained(model, adapters_path)
 
 # Pipeline
 gen = pipeline(
