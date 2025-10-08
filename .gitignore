@@ -69,6 +69,7 @@ cag/
 finetune/
 finetunedmodels/
 llama.cpp/
+unsloth_compiled_cache/
 
 # Django stuff:
 *.log
