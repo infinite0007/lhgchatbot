@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-attachments_pdf_ocr.py
-----------------------
 OCR für PDF-Attachments, die von canonical_extractor.py heruntergeladen wurden.
 - Konvertiert jede PDF-Seite in ein Bild (pdf2image)
 - Läuft EasyOCR drüber

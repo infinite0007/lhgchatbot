@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-attachments_pdf_docling_plus_figures.py
----------------------------------------
 Parst PDF-Attachments mit Docling, optional:
 - Full-Page-OCR aktivieren (für gescannte PDFs)
 - Markdown exportieren

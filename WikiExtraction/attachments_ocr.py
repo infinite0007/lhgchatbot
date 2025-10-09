@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-attachments_ocr.py
-------------------
 Liest gespeicherte Attachments (aus canonical_extractor.py --with-attachments)
 und führt OCR mit EasyOCR auf Bilddateien aus. Ergebnisse werden als JSONL
 geschrieben (1 Zeile = 1 Attachment-OCR-Result).
 
 Beispiel:
-  python attachments_ocr.py --attachments-dir data/raw/attachments --canonical-json data/raw/conf_with_atts.jsonl --out data/derivatives/ocr.jsonl --langs de
+  python attachments_ocr.py --attachments-dir data/raw/attachments --canonical-json data/raw/confluence.jsonl --out data/derivatives/ocr.jsonl --langs de en --gpu
 
   python attachments_ocr.py \
     --attachments-dir data/raw/attachments \

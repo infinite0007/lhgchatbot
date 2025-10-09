@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""
+Teil A der Pipeline:
+- Liest die JSONL aus und liest kompletten PDF Text heraus / Exportiert Figures und Tables
+
+Beispiel:
+    python attachments_pdf_docling_prepareA_figures.py --attachments-dir data/raw/attachments --canonical-json data/raw/confluence.jsonl --out data/derivatives/pdf_docling_prepared.jsonl --export-md --export-figures --figures-dir data/derivatives/figures --export-tables  --tables-dir data/derivatives/tables --images-scale 2.0 --artifacts-path data/doclingdata/models
+    robuste Typ-Imports (je nach Docling-Version vorhanden)
+"""
 
 from __future__ import annotations
 import os, json, time, argparse
@@ -10,8 +18,6 @@ from docling.datamodel.base_models import InputFormat
 from docling.datamodel.pipeline_options import PdfPipelineOptions
 from docling.document_converter import DocumentConverter, PdfFormatOption
 
-# python attachments_pdf_docling_prepare_figures.py --attachments-dir data/raw/attachments --canonical-json data/raw/confluence.jsonl --out data/derivatives/pdf_docling_prepared.jsonl --export-md --export-figures --figures-dir data/derivatives/figures --export-tables  --tables-dir data/derivatives/tables --images-scale 2.0 --artifacts-path data/doclingdata/models
-# robuste Typ-Imports (je nach Docling-Version vorhanden)
 try:
     from docling_core.types.doc import PictureItem, TableItem
 except Exception:

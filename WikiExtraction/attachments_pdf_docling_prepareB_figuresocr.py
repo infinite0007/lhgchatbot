@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-attachments_figures_ocr.py
---------------------------
 Teil B der Pipeline:
 - Liest die JSONL aus Teil A (z. B. pdf_docling_prepared.jsonl)
 - Für jede dort aufgeführte Figure (PNG) wird EasyOCR ausgeführt
@@ -16,9 +14,9 @@ Eigenschaften:
 - Robust gegen fehlende/gelöschte Figure-Dateien
 
 Beispiel:
-  python attachments_pdf_docling_prepare_figuresocr.py --prepared-jsonl data/derivatives/pdf_docling_prepared.jsonl --out data/derivatives/prepared_figures_ocr.jsonl --langs de en --with-boxes --min-conf 0.25 --skip-existing
+  python attachments_pdf_docling_prepareB_figuresocr.py --prepared-jsonl data/derivatives/pdf_docling_prepared.jsonl --out data/derivatives/prepared_figures_ocr.jsonl --langs de en --with-boxes --min-conf 0.25 --skip-existing --gpu
 
-  python attachments_pdf_docling_prepare_figuresocr.py \
+  python attachments_pdf_docling_prepareB_figuresocr.py \
     --prepared-jsonl data/derivatives/pdf_docling_prepared.jsonl \
     --out data/derivatives/prepared_figures_ocr.jsonl \
     --langs de en \
@@ -204,15 +202,19 @@ def main():
                         dedupe=args.dedupe_lines,
                     )
                     out_row: Dict[str, Any] = {
-                        # Schlüssel für spätere Joins:
-                        "pdf_local_path": normpath(pdf_path) if pdf_path else None,
-                        "figure_path": fig_path,
-                        "extracted_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                        "langs": args.langs,
-                        # Nützliche Metadaten aus Teil A:
-                        "page_index": fig.get("page_index"),
-                        "caption": fig.get("caption"),
-                    }
+                         "pdf_local_path": normpath(pdf_path) if pdf_path else None,
+                         "figure_path": fig_path,
+                         "extracted_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                         "langs": args.langs,
+                         "page_index": fig.get("page_index"),
+                         "caption": fig.get("caption"),
+                        "source_type": "pdf_figure_ocr",
+                     }
+                    # Wichtige Confluence-Metadaten aus dem Prepared-Record übernehmen:
+                    for k in ("page_id", "page_title", "page_url",
+                              "attachment_id", "title", "mediaType", "fileSize"):
+                        if k in rec:
+                            out_row[k] = rec.get(k)
 
                     if args.with_boxes:
                         out_row["ocr_items"] = ocr_res.get("items", [])

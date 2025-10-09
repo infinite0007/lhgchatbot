@@ -1,18 +1,28 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-attachments_drawio_extract.py
------------------------------
-Extrahiert TEXT-Inhalte aus .drawio (mxfile / mxGraph) Attachments.
-- Unterstützt unkomprimierte XML und compressed="true" Diagramme (base64+zlib).
-- Holt value-Attribute der mxCell-Knoten (HTML wird zu Plaintext gestrippt).
-- Schreibt JSONL (1 Zeile pro .drawio) mit zusammengeführtem Text.
+attachments_drawio_extract.py – robust(er)
+- Unterstützt .drawio/.xml mit <mxfile><diagram …>, sowohl compressed als auch uncompressed.
+- Bei uncompressed: liest Kindelement(e) von <diagram> (mxGraphModel) via ET.tostring().
+- Bei compressed: versucht Base64 und urlsafe_b64; zlib mit/ohne Raw (-15).
 
 Beispiel:
-  python attachments_drawio_extract.py \
-    --attachments-dir data/raw/attachments \
-    --canonical-json data/raw/confluence.jsonl \
-    --out data/derivatives/drawio_text.jsonl
+
+# Basis
+python .\attachments_drawio_extract.py --attachments-dir data/raw/attachments --canonical-json data/raw/confluence.jsonl --out data/derivatives/drawio_text.jsonl
+
+python .\attachments_drawio_extract.py `
+  --attachments-dir data/raw/attachments `
+  --canonical-json data/raw/confluence.jsonl `
+  --out data/derivatives/drawio_text.jsonl
+
+  
+# Mit Cache (überspringt bereits verarbeitete Dateien)
+python .\attachments_drawio_extract.py `
+  --attachments-dir data/raw/attachments `
+  --canonical-json data/raw/confluence.jsonl `
+  --out data/derivatives/drawio_text.jsonl `
+  --skip-existing
 """
 
 from __future__ import annotations
@@ -43,6 +53,7 @@ def load_canonical_map(canonical_path: Optional[str]) -> Dict[str, Dict[str, Any
                 continue
             page_id = row.get("id")
             page_title = row.get("title")
+            page_url = row.get("url")
             for a in (row.get("attachments") or []):
                 lp = a.get("local_path")
                 if not lp:
@@ -51,6 +62,7 @@ def load_canonical_map(canonical_path: Optional[str]) -> Dict[str, Dict[str, Any
                 by_local[key] = {
                     "page_id": page_id,
                     "page_title": page_title,
+                    "page_url": page_url,
                     "attachment_id": a.get("id"),
                     "title": a.get("title"),
                     "mediaType": a.get("mediaType"),
@@ -58,16 +70,27 @@ def load_canonical_map(canonical_path: Optional[str]) -> Dict[str, Dict[str, Any
                 }
     return by_local
 
+def _looks_like_drawio(path: str) -> bool:
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            head = f.read(4096)
+        return "<mxfile" in head or "<diagram" in head
+    except Exception:
+        return False
+
 def find_drawio(attachments_dir: str) -> List[str]:
-    out = []
+    out: List[str] = []
     for root, _, files in os.walk(attachments_dir):
         for fn in files:
-            if os.path.splitext(fn)[1].lower() in {".drawio", ".xml"}:
-                out.append(os.path.join(root, fn))
+            ext = os.path.splitext(fn)[1].lower()
+            fp = os.path.join(root, fn)
+            if ext in {".drawio", ".xml"}:
+                out.append(fp)
+            elif ext == ".bin" and _looks_like_drawio(fp):
+                out.append(fp)
     return out
 
 def strip_html_to_text(html: str) -> str:
-    # Draw.io speichert meist HTML in value-Attributen
     if not html:
         return ""
     soup = BeautifulSoup(unescape(html), "html.parser")
@@ -80,8 +103,8 @@ def extract_text_from_mxgraph(xml_text: str) -> str:
     except Exception:
         return ""
     texts: List[str] = []
-    # Werte sind i.d.R. in mxCell@value
     for cell in root.iter():
+        # Namespaces ignoren: nur auf Suffix prüfen
         if cell.tag.endswith("mxCell"):
             val = cell.attrib.get("value")
             if val:
@@ -90,45 +113,73 @@ def extract_text_from_mxgraph(xml_text: str) -> str:
                     texts.append(t)
     return "\n".join(texts).strip()
 
+def _decompress_base64_both(b64txt: str) -> Optional[str]:
+    """Versucht normal & urlsafe Base64; zlib raw & normal."""
+    if not b64txt:
+        return None
+    candidates = []
+    try:
+        candidates.append(base64.b64decode(b64txt))
+    except Exception:
+        pass
+    try:
+        candidates.append(base64.urlsafe_b64decode(b64txt + "=="))
+    except Exception:
+        pass
+    for raw in candidates:
+        for wbits in (-15, zlib.MAX_WBITS):
+            try:
+                return zlib.decompress(raw, wbits).decode("utf-8", errors="ignore")
+            except Exception:
+                continue
+    return None
+
 def parse_drawio(path: str) -> str:
-    """
-    .drawio ist ein <mxfile> mit 1..n <diagram>-Kindern.
-    - uncompressed: <diagram> enthält XML als Klartext (mxGraphModel)
-    - compressed="true": Base64+zlib komprimiertes XML
-    Wir extrahieren Text aus allen Diagrammen und mergen.
-    """
     with open(path, "r", encoding="utf-8", errors="ignore") as f:
         data = f.read()
 
     try:
         root = ET.fromstring(data)
     except Exception:
-        return ""  # Not a valid drawio XML; silently skip
+        return ""  # keine gültige drawio/xml
 
     all_texts: List[str] = []
-    for diag in root.findall(".//diagram"):
-        txt = diag.text or ""
-        compressed = (diag.attrib.get("compressed", "false").lower() == "true")
-        xml_inner = ""
-        if compressed:
-            try:
-                raw = base64.b64decode(txt)
-                xml_inner = zlib.decompress(raw, -15).decode("utf-8", errors="ignore")
-            except Exception:
-                continue
-        else:
-            # uncompressed: Inhalt kann direkt das mxGraphModel XML sein
-            xml_inner = txt
 
-        if xml_inner:
-            t = extract_text_from_mxgraph(xml_inner)
-            if t:
-                all_texts.append(t)
+    # Finde alle <diagram>-Knoten (ohne Namespaces)
+    diagrams = [el for el in root.iter() if el.tag.endswith("diagram")]
+    if not diagrams:
+        # Manche .xml haben direkt ein mxGraphModel ohne <mxfile>/<diagram>
+        # => versuche direkt zu extrahieren
+        txt = extract_text_from_mxgraph(data)
+        return txt
+
+    for diag in diagrams:
+        compressed = (diag.attrib.get("compressed", "false").lower() == "true")
+
+        if compressed:
+            txtnode = diag.text or ""
+            xml_inner = _decompress_base64_both(txtnode) or ""
+        else:
+            # Uncompressed: Inhalt liegt als Kindelement (z. B. <mxGraphModel/>) vor
+            if len(diag):
+                # kombiniere alle direkten Kinder
+                parts = [ET.tostring(child, encoding="unicode") for child in list(diag)]
+                xml_inner = "\n".join(parts)
+            else:
+                # manchmal liegt das XML (HTML-escaped) direkt im Text
+                xml_inner = diag.text or ""
+
+        if not xml_inner:
+            continue
+
+        t = extract_text_from_mxgraph(xml_inner)
+        if t:
+            all_texts.append(t)
 
     return "\n".join(all_texts).strip()
 
 def main():
-    ap = argparse.ArgumentParser(description="Draw.io (.drawio) Text-Extraktion.")
+    ap = argparse.ArgumentParser(description="Draw.io (.drawio/.xml) Text-Extraktion.")
     ap.add_argument("--attachments-dir", default="data/raw/attachments")
     ap.add_argument("--canonical-json", default=None)
     ap.add_argument("--out", default="data/derivatives/drawio_text.jsonl")
@@ -150,7 +201,8 @@ def main():
                     pass
 
     files = find_drawio(args.attachments_dir)
-    done = 0
+    done, empty = 0, 0
+
     with open(args.out, "a", encoding="utf-8") as fout:
         for fp in files:
             npath = os.path.normpath(fp)
@@ -159,6 +211,7 @@ def main():
             try:
                 text = parse_drawio(npath)
                 if not text:
+                    empty += 1
                     continue
                 rec = {
                     "local_path": npath,
@@ -171,7 +224,7 @@ def main():
             except Exception as e:
                 log(f"WARN: Draw.io-Parsing fehlgeschlagen für {npath}: {e}")
 
-    log(f"Fertig. Draw.io-Dateien gefunden: {len(files)} | mit Text extrahiert: {done} | Output: {args.out}")
+    log(f"Fertig. Draw.io-Dateien gefunden: {len(files)} | mit Text extrahiert: {done} | leer/ohne Text: {empty} | Output: {args.out}")
 
 if __name__ == "__main__":
     main()
