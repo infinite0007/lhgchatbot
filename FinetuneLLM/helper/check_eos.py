@@ -1,7 +1,8 @@
 from transformers import AutoTokenizer
 
 # Pfad zu deinem HF-Modellordner (kann lokal sein oder aus HuggingFace Hub) End of Sentence (EOS)
-model_path = "finetunedmodels/Falcon3-1B-Base-lora-pirate-out/merged_model"
+# bei gguf Files funktioniert das hier nicht dann einfach das GGUF mit koboldcpp laden und dann erscheinen diese in der Console
+model_path = r"C:\Users\lhglij1\OneDrive - Liebherr\Desktop\Master\lhgchatbot\FinetuneLLM\finetunedmodels\Falcon3-1B-Base-lora-unsloth-pirate-out\merged_model_for_gguf_convert"
 
 tokenizer = AutoTokenizer.from_pretrained(model_path)
 
