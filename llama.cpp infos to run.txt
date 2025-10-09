@@ -1,0 +1,35 @@
+https://github.com/ggml-org/llama.cpp
+Erklärung: https://www.youtube.com/watch?v=cr6eA30_TxQ
+
+start:
+# Use a local model file
+llama-cli -m my_model.gguf
+
+# Or download and run a model directly from Hugging Face hintere dann halt ersetzen liegt dann in: C:\Users\nutzername\AppData\Local\llama.cpp
+llama-cli -hf ggml-org/gemma-3-1b-it-GGUF
+
+
+z. B.:
+llama-cli -hf ggml-org/gemma-3-1b-it-GGUF
+llama-cli -hf ggml-org/gemma-3-4b-it-GGUF
+llama-cli -hf ggml-org/gemma-3-12b-it-GGUF   # zu langsam für den normalen Laptop
+llama-cli -hf tiiuae/Falcon-H1-3B-Instruct-GGUF
+
+das -hf läd runter startet direkt dann von huggingface wenn man es runtergeladen hat liegen die Models im Ordner Models starten lokal dann mit z. B.:
+ggml-org_gemma-3-1b-it-GGUF_gemma-3-1b-it-Q4_K_M.gguf
+
+help with: llama-cli --help
+get cuda gpu to work: https://www.reddit.com/r/LocalLLaMA/comments/1kxifq9/llamacpp_wont_use_gpus/?rdt=52998
+
+
+
+aber veraltet denn er hört nie auf - da lora nicht die gleichen eos end of sentence hat wie das base Modell: 
+llama-cli -m "C:\Users\lhglij1\OneDrive - Liebherr\Desktop\Master\LLama\Models\pirate\piratemodel.gguf" --lora "C:\Users\lhglij1\OneDrive - Liebherr\Desktop\Master\LLAma\Models\pirate\piratemodel_adapter.gguf" --interactive-first --color --in-prefix "<human>: " --in-suffix "\n<assistant>: " --stop "<|endoftext|>" --stop "<human>:"
+
+nun wenn mit unsloth gelernt geht die Umwandlung convert_hf_to_gguf.py mittels Beispiel:
+python convert_hf_to_gguf.py "C:\Users\lhglij1\OneDrive - Liebherr\Desktop\Master\lhgchatbot\FinetuneLLM\finetunedmodels\Falcon3-1B-Base-lora-unsloth-pirate-out\merged_model_for_gguf_convert" --outfile piratellm.gguf
+
+nun könnte man starten mit console dann die gguf im Order llama release mit:  (Problem: eos wird nicht erkannt warum auch immer deshalb Kobold.cpp benutzen.)
+llama-cli -m "C:\Users\lhglij1\OneDrive - Liebherr\Desktop\Master\lhgchatbot\FinetuneLLM\finetunedmodels\Falcon3-1B-Base-lora-unsloth-pirate-out\gguf\piratellm.gguf" -cnv
+
+Tolles Tool (GUI benutzerfreundlich) ohne viel backend Stuff direkte gguf models starten und mit UI chatten: https://github.com/LostRuins/koboldcpp bei release .exe laden
