@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-# Eigene Methode ohne unsloth - dabei wird das Modell zwar erstellt und kann benutzt werden aber niemals Quantifiziert da leider Infos verloren gehen weshalb das gguf builden hier immer fehlschlägt. Also wenn man gguf quantifizieren möchte den finetunellm_unsloth_gguf.py benutzen (dafür mehr installationsaufwand mit unsloth).
+
 import os, json
 from typing import Dict, Any, List, Optional
 import torch
@@ -83,6 +83,10 @@ lora_cfg = LoraConfig(
 )
 model = get_peft_model(model, lora_cfg)
 
+# >>> EOS-FIX: IDs setzen, damit auf eos gestoppt wird
+model.config.eos_token_id = tokenizer.eos_token_id  # >>> EOS-FIX
+model.config.pad_token_id = tokenizer.pad_token_id  # >>> EOS-FIX
+
 # ------------------------------
 # Daten laden (JSON oder JSONL)
 # ------------------------------
@@ -122,7 +126,7 @@ def to_prompt_text(ex: Dict[str, Any]) -> Optional[str]:
         if qk in ex and ak in ex and isinstance(ex[qk], str) and isinstance(ex[ak], str):
             q = ex[qk].strip()
             a = ex[ak].strip()
-            return f"<human>: {q}\n<assistant>: {a}"
+            return f"<human>: {q}\n<assistant>: {a}{tokenizer.eos_token}"  # >>> EOS-FIX
 
     # 2. Nachrichten-Format („messages“) erkennen
     msgs = ex.get("messages")
@@ -137,7 +141,7 @@ def to_prompt_text(ex: Dict[str, Any]) -> Optional[str]:
             if role == "user":
                 parts.append(f"<human>: {content}")
             elif role == "assistant":
-                parts.append(f"<assistant>: {content}")
+                parts.append(f"<assistant>: {content}{tokenizer.eos_token}")  # >>> EOS-FIX
             else:
                 parts.append(f"<system>: {content}")
         return "\n".join(parts)
@@ -169,7 +173,7 @@ def tokenize_fn(batch):
     return tokenizer(
         batch["text"],
         truncation=True,
-        padding="max_length",
+        padding=False,              # >>> EOS-FIX: kein max_length-Padding, damit EOS nicht abgeschnitten wird
         max_length=MAX_SEQ_LEN,
     )
 
