@@ -29,7 +29,7 @@ llama-cli -m "C:\Users\lhglij1\OneDrive - Liebherr\Desktop\Master\LLama\Models\p
 nun wenn mit unsloth gelernt geht die Umwandlung convert_hf_to_gguf.py mittels Beispiel:
 python convert_hf_to_gguf.py "C:\Users\lhglij1\OneDrive - Liebherr\Desktop\Master\lhgchatbot\FinetuneLLM\finetunedmodels\Falcon3-1B-Base-lora-unsloth-pirate-out\merged_model_for_gguf_convert" --outfile piratellm.gguf
 
-nun könnte man starten mit console dann die gguf im Order llama release mit:  (Problem: eos wird nicht erkannt warum auch immer deshalb Kobold.cpp benutzen.)
-llama-cli -m "C:\Users\lhglij1\OneDrive - Liebherr\Desktop\Master\lhgchatbot\FinetuneLLM\finetunedmodels\Falcon3-1B-Base-lora-unsloth-pirate-out\gguf\piratellm.gguf" -cnv
+nun könnte man starten mit console dann die gguf im Order llama release mit:  Gerne aber kobold.cpp nutzen als wunderschöne schnelle gui
+llama-cli -m "C:\Users\lhglij1\OneDrive - Liebherr\Desktop\Master\lhgchatbot\FinetuneLLM\finetunedmodels\Falcon3-1B-Base-lora-unsloth-pirate-out\gguf\pirate03.gguf" -cnv --color
 
 Tolles Tool (GUI benutzerfreundlich) ohne viel backend Stuff direkte gguf models starten und mit UI chatten: https://github.com/LostRuins/koboldcpp bei release .exe laden
