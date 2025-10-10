@@ -59,9 +59,10 @@ while True:
     outputs = gen(
         prompt,
         max_new_tokens=400,
-        do_sample=False,
-        temperature=0.0,
-        top_p=0.7,
+        do_sample=True, # kann auf True gesetzt werden um mehr Vielfalt zu haben also Halluzinieren - bei faktischen sachen False lassen
+        temperature=1.0, # Skaliert die Logits: höher = „mutiger“. 0.0–0.3 sehr konservativ, 0.7–1.1 kreativ. Nur sinnvoll, wenn do_sample=True
+        top_p=0.7,       # (nucleus sampling) Nimmt nur die kleinste Token-Menge, deren Summe ≥ p ist. 0.85–0.95 üblich für natürliche Vielfalt.
+        top_k=40,        # Beschränkt die Auswahl auf die k wahrscheinlichsten nächsten Token. 10–50 üblich für natürliche Vielfalt.    
         return_full_text=True,
         pad_token_id=tokenizer.eos_token_id,
         eos_token_id=tokenizer.eos_token_id,
