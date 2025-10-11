@@ -30,8 +30,11 @@ from unsloth import FastLanguageModel
 # Konfiguration
 # ------------------------------
 BASE_MODEL = os.environ.get("BASE_MODEL", "../Falcon3-1B-Base")
-DATA_PATH = os.environ.get("DATA_PATH", "datasets/trainpirate.jsonl")  # unterstützt .json oder .jsonl
-OUTPUT_DIR = os.environ.get("OUTPUT_DIR", "finetunedmodels/Falcon3-1B-Base-lora-unsloth-pirate-out")
+# DATA_PATH = os.environ.get("DATA_PATH", "datasets/trainpirate.jsonl")  # unterstützt .json oder .jsonl
+# OUTPUT_DIR = os.environ.get("OUTPUT_DIR", "finetunedmodels/Falcon3-1B-Base-lora-unsloth-pirate-out")
+
+DATA_PATH = os.environ.get("DATA_PATH", r"C:\Users\lhglij1\OneDrive - Liebherr\Desktop\Master\lhgchatbot\WikiExtraction\data\derivatives\qa_dataset.jsonl")
+OUTPUT_DIR = os.environ.get("OUTPUT_DIR", "finetunedmodels/Falcon3-1B-Base-lora-unsloth-liebherrqa-out")
 
 USE_QLORA = True    # 4-bit QLoRA Aktiviert die QLoRA-Methode (Low-Rank Adapters + 4-Bit Quantisierung) / Wenn du das ausschaltest, trainierst du klassisch auf ganzen Modellgewichten; das braucht deutlich mehr Speicher und Rechenzeit
 RANK = 16           # Die Rang-Dimension der LoRA-Adapter — d.h. statt ganze Gewichtsmatri­zen zu trainieren, trainierst du zwei kleinere „low-rank“ Matrizen der Dimension rank. Je höher der Rang, desto mehr Anpassungsfähigkeit haben die Adapter. / hoch = Mehr Kapazität, das Modell kann komplexere Anpassungen lernen / nieder = Weniger Ausdrucksfähigkeit, der Adapter ist beschränkter / Wenn zu hoch, kann es Overfitting begünstigen oder Speicher/RAM-Bedarf wachsen
@@ -40,7 +43,7 @@ DROPOUT = 0.05      # Wahrscheinlichkeit, mit der man zufällig Verbindungen (Pa
 MAX_SEQ_LEN = 2048  # Maximale Länge (in Tokens) eines Eingabe- oder Prompt+Antwortkontexts, der in das Modell gegeben wird (Trunkierung, Padding etc.) / hoch = Längere Kontexte erlauben mehr Information, aber benötigen mehr Speicher & Rechenzeit / nieder = Kürzere Kontexte können Informationen abschneiden / das Modell kann weniger „sehen“ / Wenn du zu lang setzt, kann der Speicher überlaufen oder das Training extrem langsam werden
 BATCH_SIZE = 1      # Anzahl der Beispiele pro Batch, die gleichzeitig verarbeitet werden (Gradienten werden über den Batch gemittelt) / hoch = Glattere Gradienten, effizientere Nutzung der GPU / nieder = Rauschigere Gradienten, langsameres Konvergieren / Wenn zu groß, OOM (Out-of-Memory); zu klein => instabile Updates, starkes Rauschen
 GRAD_ACCUM = 8      # Gradient Accumulation Steps: du sammelst Gradienten über mehrere kleine Batches, bevor du ein Update machst — simuliert einen größeren Batch, wenn GPU nicht genug Platz bietet / hoch = Ermöglicht effektiv größeren Batch bei limitierter Hardware / nieder = Verlängert die Zeit bis zum Update (weniger Updates pro Zeiteinheit) / Wenn zu groß, kann Training ineffizient werden oder Instabilitäten auftreten
-EPOCHS = 3.0        # Anzahl der Durchläufe über das komplette Trainingsset / hoch = Mehr Lernen möglich, Modell hat mehr Gelegenheit, Muster zu extrahieren / nieder = Risiko von Overfitting, Training dauert länger / Wenn zu viele Epochen, kann das Modell zu stark memorisieren
+EPOCHS = 5.0        # Anzahl der Durchläufe über das komplette Trainingsset / hoch = Mehr Lernen möglich, Modell hat mehr Gelegenheit, Muster zu extrahieren / nieder = Risiko von Overfitting, Training dauert länger / Wenn zu viele Epochen, kann das Modell zu stark memorisieren
 LR = 2e-4           # Schrittweite, mit der Modellgewichte in Richtung des Gradienten verschoben werden / hoch = Schnellere Anpassung / schnelleres Lernen (sofern stabil) / nieder = Wenn zu hoch, kann das Training instabil werden, Loss explodieren / Wenn zu niedrig, dauert Lernen sehr lange oder bleibt im Lokalminimum stecken
 WARMUP = 0.05       # Anteil (Ratio) der Trainingsschritte, in denen die Lernrate von 0 (oder niedrigem Wert) linear auf die volle LR hochgefahren wird. Dies stabilisiert frühe Updates. / hoch = Zu kurzer Warmup: riskante große Updates zu früh / nieder = Zu langer Warmup: verschwendete Schritte mit zu kleinen Updates / Ein guter Warmup hilft, dass das Modell stabil lernt zu Beginn
 LOG_STEPS = 10      # Nach wie vielen Update-Schritten (oder Batches) protokolliert / geloggt wird / hoch = Häufigeres Logging — du siehst den Fortschritt feiner / nieder = Weniger Logging — Übersichtlicher, weniger Overhead / Wenn zu häufig geloggt wird, kann Logging Overhead das Training bremsen
@@ -102,11 +105,14 @@ pairs = [
 ]
 
 def to_prompt_text(ex: Dict[str, Any]) -> Optional[str]:
-    # 1. Klassisches QA-Format
+    # 1. Klassisches QA-Format (funktioniert jetzt auch mit zusätzlichen Keys)
     for qk, ak in pairs:
-        if qk in ex and ak in ex and isinstance(ex[qk], str) and isinstance(ex[ak], str):
-            q = ex[qk].strip()
-            a = ex[ak].strip()
+        q = ex.get(qk)
+        a = ex.get(ak)
+        if isinstance(q, str) and isinstance(a, str):
+            q = q.strip()
+            a = a.strip()
+            # Nur Text – Quelleninfos etc. bleiben unberührt
             return f"<human>: {q}\n<assistant>: {a}{tokenizer.eos_token}"
 
     # 2. Nachrichten-Format („messages“) erkennen
@@ -132,6 +138,7 @@ def to_prompt_text(ex: Dict[str, Any]) -> Optional[str]:
         return ex["text"]
 
     return None
+
 
 normalized = []
 for ex in raw:
