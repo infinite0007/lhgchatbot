@@ -64,7 +64,7 @@ falcon_env
 
 # canonical extractor
 data/
-rag/
+chroma_db
 cag/
 finetune/
 finetunedmodels/
