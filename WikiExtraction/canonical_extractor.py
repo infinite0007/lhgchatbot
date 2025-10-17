@@ -14,7 +14,7 @@ Features
 Beispiele
 ---------
   python canonical_extractor.py --space SWEIG --since 2024-01-01 --out data/raw/confluence.jsonl
-  python canonical_extractor.py --space SWEIG --with-attachments --out data/raw/conf_with_atts.jsonl
+  python canonical_extractor.py --space SWEIG --with-attachments --out data/raw/confluence.jsonl
 """
 
 from __future__ import annotations
