@@ -4,25 +4,45 @@
 join_all_pages.py
 -----------------
 Mergt alle Attachment-Signale (Image-OCR, Drawio, PDF-Text, PDF-Figure-OCR, PDF-Tabellen)
-zur Seite zurück. Schreibt pro Seite genau *einen* Record.
-
-Beispiel:
-  python join_all_pages.py --pages data/raw/confluence.jsonl --ocr-images data/derivatives/ocr.jsonl --drawio data/derivatives/drawio_text.jsonl --pdf-docling data/derivatives/pdf_docling_prepared.jsonl --pdf-fig-ocr data/derivatives/prepared_figures_ocr.jsonl --out data/derivatives/joined_pages_full.jsonl --tables-as-text --tables-max-rows 30 --tables-max-cols 12 --tables-max-cell-chars 120
-
-  python join_all_pages.py \
-    --pages data/raw/confluence.jsonl \
-    --ocr-images data/derivatives/ocr.jsonl \
-    --drawio data/derivatives/drawio_text.jsonl \
-    --pdf-docling data/derivatives/pdf_docling_prepared.jsonl \
-    --pdf-fig-ocr data/derivatives/prepared_figures_ocr.jsonl \
-    --out data/derivatives/joined_pages_full.jsonl \
-    --tables-as-text --tables-max-rows 30 --tables-max-cols 12 --tables-max-cell-chars 120
+zur Seite zurück. Schreibt pro Seite genau *einen* Record und erzeugt:
+  - attachments_index: strukturierter Index der Anhänge/Signale
+  - attachments_text:   zusammengeführter Klartext (OCR/Drawio/PDF/Table-Preview)
+  - text_plain_plus_attachments: Basistext + attachments_text
+  - Sanftes Entgraten von Confluence-UI/Boilerplate (scrub_base_noise)
+  - Optionale Abschnitts-Labels für die KI (--label-blocks)
+  - Tabellen-Preview als Markdown (--tables-as-text mit Limits)
 """
 
 from __future__ import annotations
-import os, json, argparse, csv
+import os, json, argparse, csv, re
 from collections import defaultdict
 from typing import Dict, Any, Iterable, List, Optional
+
+# --------------------- UI-/Boilerplate-Entgratung ---------------------
+
+UI_NOISE_PATTERNS = [
+    r"Zum Anfang der Metadaten",
+    r"Invalid label:\s*\"?<Define your search lable>\"?",
+    r"Feature\s*/\s*Requirement change Request section",
+    r"Affected Objects\s*<Define your search lable>",
+    r"\bGetting issue details\.\.\.\b",               # JIRA Platzhalter
+    r"\bSTATUS\b",                                     # JIRA Platzhalter
+    r"\btrue\s+true\s+false\s+\S+\s+false\s+\d+\s+\d+\b",  # Drawio-Makrozeilen im text_plain
+]
+
+def scrub_base_noise(s: str) -> str:
+    """Entfernt typische Confluence-UI-Fetzen & glättet Whitespace.
+       Lässt fachlichen Inhalt unangetastet."""
+    if not isinstance(s, str):
+        return ""
+    # Confluence-/Makro-Codefences „auspacken“ (Inhalt behalten)
+    s = re.sub(r"```+\s*([^`]+?)\s*```+", r"\1", s, flags=re.DOTALL)
+    # UI-Fetzen entfernen
+    for rx in UI_NOISE_PATTERNS:
+        s = re.sub(rx, " ", s, flags=re.IGNORECASE)
+    # Whitespace glätten
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
 
 # --------------------- Helpers ---------------------
 
@@ -43,44 +63,38 @@ def normpath(p: Optional[str]) -> Optional[str]:
     return os.path.normpath(p) if isinstance(p, str) else None
 
 def safe_append_text(parts: List[str], s: Optional[str]) -> None:
-    if isinstance(s, str) and s.strip():
-        parts.append(s.strip())
+    if isinstance(s, str):
+        st = s.strip()
+        if st:
+            parts.append(st)
 
 def trim_cell(s: str, max_chars: int) -> str:
-    if len(s) <= max_chars:
-        return s
-    # Unicode-sicheres Kürzen
-    return s[: max(0, max_chars - 1)] + "…"
+    return s if len(s) <= max_chars else (s[: max(0, max_chars - 1)] + "…")
 
 def csv_to_markdown_preview(csv_path: str,
                             max_rows: int = 25,
                             max_cols: int = 10,
                             max_cell_chars: int = 80) -> Optional[str]:
-    """Liest CSV und rendert eine kompakte Markdown-Vorschau mit harten Limits.
-       Gibt None zurück, wenn Datei fehlt/leer/unlesbar."""
-    if not os.path.exists(csv_path):
+    """Liest CSV und rendert eine kompakte Markdown-Vorschau mit harten Limits."""
+    if not (isinstance(csv_path, str) and os.path.exists(csv_path)):
         return None
     try:
         with open(csv_path, "r", encoding="utf-8", newline="") as fp:
             reader = csv.reader(fp)
-            rows = []
+            rows: List[List[str]] = []
             for i, row in enumerate(reader):
                 if i == 0:
-                    header = row[:max_cols]
-                    header = [trim_cell(c or "", max_cell_chars) for c in header]
+                    header = [trim_cell((c or ""), max_cell_chars) for c in row[:max_cols]]
                     rows.append(header)
                 else:
-                    if i > max_rows:  # inkl. Header max_rows+1 Zeilen gesamt
+                    if i > max_rows:
                         break
-                    cut = row[:max_cols]
-                    cut = [trim_cell(c or "", max_cell_chars) for c in cut]
+                    cut = [trim_cell((c or ""), max_cell_chars) for c in row[:max_cols]]
                     rows.append(cut)
-            if not rows:
-                return None
-        # Markdown bauen
-        header = rows[0] if rows else []
-        body = rows[1:] if len(rows) > 1 else []
-        md = []
+        if not rows:
+            return None
+        header, body = rows[0], rows[1:]
+        md: List[str] = []
         if header:
             md.append("| " + " | ".join(header) + " |")
             md.append("| " + " | ".join(["---"] * len(header)) + " |")
@@ -88,7 +102,6 @@ def csv_to_markdown_preview(csv_path: str,
             md.append("| " + " | ".join(r) + " |")
         if not md:
             return None
-        # Hinweis auf Kürzung
         if len(body) >= max_rows:
             md.append(f"\n*… gekürzt auf {max_rows} Zeilen / {max_cols} Spalten …*")
         return "\n".join(md)
@@ -116,13 +129,23 @@ def main():
     # Optional: OCR-Bounding-Boxes zusätzlich mitschreiben
     ap.add_argument("--include-ocr-boxes", action="store_true",
                     help="OCR-Boxen (figures/image) zusätzlich in attachments_index speichern.")
-    args = ap.parse_args()
 
-    os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
+    # Optional: Label-Header vor Attachment-Textblöcke setzen
+    ap.add_argument("--label-blocks", action="store_true",
+                    help="Fügt Abschnitts-Labels in attachments_text ein (hilft dem LLM beim Verstehen).")
+
+    args = ap.parse_args()
+    out_dir = os.path.dirname(args.out) or "."
+    os.makedirs(out_dir, exist_ok=True)
 
     # ---------- Buckets je Seite ----------
     texts_by_page: Dict[str, List[str]] = defaultdict(list)     # für attachments_text
     index_by_page: Dict[str, List[Dict[str, Any]]] = defaultdict(list)  # attachments_index
+
+    def maybe_label(pid: str, label: str):
+        """Optionaler Abschnitts-Header, damit die KI Quelle/Typ erkennt."""
+        if args.label_blocks and isinstance(label, str) and label.strip():
+            safe_append_text(texts_by_page[pid], f"\n### {label}\n")
 
     # ---------- Image-OCR ----------
     for r in load_rows(args.ocr_images):
@@ -142,7 +165,9 @@ def main():
         if args.include_ocr_boxes and "ocr_boxes" in r:
             entry["ocr_boxes"] = r.get("ocr_boxes")  # evtl. groß!
         index_by_page[pid].append(entry)
-        safe_append_text(texts_by_page[pid], txt)
+        if isinstance(txt, str) and txt.strip():
+            maybe_label(pid, f"Image OCR ({os.path.basename(entry['local_path'] or '')})")
+            safe_append_text(texts_by_page[pid], txt)
 
     # ---------- Drawio ----------
     for r in load_rows(args.drawio):
@@ -159,7 +184,11 @@ def main():
             "page_url": r.get("page_url"),
         }
         index_by_page[pid].append(entry)
-        safe_append_text(texts_by_page[pid], r.get("drawio_text"))
+        dtext = r.get("drawio_text")
+        if isinstance(dtext, str) and dtext.strip():
+            maybe_label(pid, f"Diagram (draw.io) {entry['title'] or ''}")
+            # Drawio-„Graph“ bleibt als Klartext (z. B. Bedingungen/Edges)
+            safe_append_text(texts_by_page[pid], dtext)
 
     # ---------- PDF (Docling-Text + Tables/ Figures-Referenzen) ----------
     #  A) PDF-Text + Tables-Index (+optional Tables als Text)
@@ -172,8 +201,7 @@ def main():
         pdf_title = r.get("title")
         pdf_text = r.get("text") or ""
 
-        # Volltext des PDFs ebenfalls in attachments_text aufnehmen
-        if pdf_text.strip():
+        if isinstance(pdf_text, str) and pdf_text.strip():
             index_by_page[pid].append({
                 "type": "pdf_text",
                 "pdf_local_path": pdf_path,
@@ -181,6 +209,7 @@ def main():
                 "title": pdf_title,
                 "page_url": r.get("page_url"),
             })
+            maybe_label(pid, f"PDF Text ({pdf_title or os.path.basename(pdf_path or '')})")
             safe_append_text(texts_by_page[pid], pdf_text)
 
         # Tabellen
@@ -197,7 +226,6 @@ def main():
                 "csv": csv_path,
                 "html": html_path,
             }
-            # Optional: Tabelleninhalt als Markdown-Vorschau ins attachments_text mischen
             if args.tables_as_text and csv_path:
                 md = csv_to_markdown_preview(
                     csv_path,
@@ -206,16 +234,14 @@ def main():
                     max_cell_chars=args.tables_max_cell_chars,
                 )
                 if md:
-                    # Ein kleiner Header pro Tabelle hilft der KI
-                    header = f"Table from PDF '{pdf_title}' (page_index={page_idx}, file={os.path.basename(csv_path)}):"
-                    safe_append_text(texts_by_page[pid], header)
+                    maybe_label(pid, f"Table from PDF '{pdf_title}' (page_index={page_idx}, file={os.path.basename(csv_path)})")
                     safe_append_text(texts_by_page[pid], md)
-                    table_entry["text_preview"] = md  # auch im Index verfügbar
+                    table_entry["text_preview"] = md
             index_by_page[pid].append(table_entry)
 
         # (Hinweis: Figures-Referenzen sind in r['figures'], das OCR dazu kommt separat unten)
 
-    #  B) Figures-OCR (aus Teil B) – schon Text, optional Boxen
+    #  B) Figures-OCR (aus Fig-Detektor/Extractor) – Text + optional Boxen
     for r in load_rows(args.pdf_fig_ocr):
         pid = r.get("page_id")
         if not pid:
@@ -233,17 +259,24 @@ def main():
         if args.include_ocr_boxes and "ocr_items" in r:
             entry["ocr_items"] = r.get("ocr_items")
         index_by_page[pid].append(entry)
-        safe_append_text(texts_by_page[pid], r.get("ocr_text"))
+        ftxt = r.get("ocr_text")
+        if isinstance(ftxt, str) and ftxt.strip():
+            maybe_label(pid, f"Figure OCR ({os.path.basename(entry['figure_path'] or '')})")
+            if entry.get("caption"):
+                safe_append_text(texts_by_page[pid], f"Caption: {entry['caption']}")
+            safe_append_text(texts_by_page[pid], ftxt)
 
     # ---------- Schreiben ----------
     with open(args.out, "w", encoding="utf-8") as fout:
         for p in load_rows(args.pages):
             pid = p.get("id")
+            # Basistext sanft entgraten (UI-Reste weg, Inhalt behalten)
+            base = scrub_base_noise((p.get("text_plain") or "").strip())
             extras_text = "\n".join(texts_by_page.get(pid, []))
+
             p["attachments_index"] = index_by_page.get(pid, [])
             p["attachments_text"] = extras_text
 
-            base = (p.get("text_plain") or "").strip()
             if base and extras_text:
                 p["text_plain_plus_attachments"] = base + "\n\n" + extras_text
             elif extras_text:
