@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-make_io_dataset_kg_facet_variants.py
+make_io_dataset_kg.py
 ------------------------------------
 
 ZWECK
@@ -44,22 +44,8 @@ AUSGABE (NDJSON, eine Zeile pro INPUT→OUTPUT-Variante):
       triples_in_facet, triples_in_entity,
       insufficient_evidence (optional), conflict_notes (optional)
 
-CLI (wichtige Parameter wie vorher):
-  --input PATH
-  --out PATH
-  --kg-out PATH
-  --endpoint URL   --model NAME
-  --max-page-chars  --min-context-chars
-  --extractor-max-triples-per-page  --extractor-temperature  --extractor-max-tokens
-  --top-entities  --min-triples-per-entity
-  --facet-split  --min-triples-per-facet
-  --outputs-per-entity  --variants-per-output
-  --generator-temperature  --generator-max-tokens  --max-sources-per-output
-  --use-detector  --detector-temperature  --detector-max-tokens
-  --timeout  --retries  --limit-pages  --max-total-pairs
-
 BEISPIEL:
-  python make_io_dataset_kg.py --input data/derivatives/joined_pages_full.jsonl --out data/derivatives/io_dataset.jsonl --endpoint http://127.0.0.1:8080/v1/chat/completions --model gemma-3-12b-instruct --kg-out data/derivatives/kg_triples.jsonl --top-entities 0 --facet-split --min-triples-per-entity 1 --min-triples-per-facet 1 --outputs-per-entity 0 --variants-per-output 2 --generator-temperature 0.2
+  python make_io_dataset_kg.py --input data/derivatives/joined_pages_full.jsonl --out data/derivatives/io_dataset.jsonl --endpoint http://127.0.0.1:8080/v1/chat/completions --model gemma-3-12b-instruct --kg-out data/derivatives/kg_triples.jsonl --top-entities 0 --facet-split --min-triples-per-entity 1 --min-triples-per-facet 1 --outputs-per-entity 0 --variants-per-output 10 --generator-temperature 0.2
 
   python make_io_dataset_kg.py \
     --input data/derivatives/joined_pages_full.jsonl \
@@ -216,7 +202,7 @@ SYSTEM_KG_EXTRACTOR = (
     "'child lock', 'ambient temperature sensor'.\n"
     "2) REJECT non-informative subjects/objects: IDs, pure numbers, single codes like '12345', "
     "'CFG_01', '{GUID}', or raw filenames. Prefer the meaningful feature or parameter name instead.\n"
-    "3) Keep units explicit (°C, %, s/min/h).\n"
+    "3) Keep units explicit for example units like (°C, %, ms/s/min/h) or others.\n"
     "4) OUTPUT FORMAT: NDJSON; each line JSON:\n"
     "   {\"subj\": str, \"pred\": str, \"obj\": str, \"page_id\": str, \"page_title\": str, \"page_url\": str}\n"
     "5) One fact per line. Only include facts present in the text. No hallucinations.\n"
@@ -231,7 +217,6 @@ USER_KG_EXTRACTOR = (
     "Extract up to {max_triples} high-quality factual triples as NDJSON."
 )
 
-# OPTIONALER Normalisierer – kanonisiert Entitäten und wirft schlechte Triples weg
 SYSTEM_KG_NORMALIZER = (
     "You are a knowledge-graph triple normalizer. Given raw triples, rewrite SUBJECT/OBJECT into "
     "concise, canonical, human-meaningful entities (e.g., 'Sabbath mode', 'child lock').\n"
@@ -257,37 +242,33 @@ SUPPORT_PERSONA_BLOCK = (
 )
 
 SYSTEM_GENERATOR = (
-    f"{SUPPORT_PERSONA_BLOCK}\n"
-    "From the provided knowledge subgraph (triples) and pages, generate INPUT→OUTPUT pairs.\n"
-    "HARD RULES:\n"
-    "1) English only.\n"
-    "2) OUTPUT FORMAT per line: "
-    "{\"input\": str, \"output\": str, \"citations\": [{\"url\": str, \"title\": str, \"page_id\": str}]}\n"
-    "3) Vary 'input' style (question, instruction, keywords, short scenario) BUT keep the SAME 'output' "
-    "for all variants of the same subgraph.\n"
-    "4) The 'output' must be specific and deep:\n"
-    "   - start with a 1–2 sentence summary\n"
-    "   - then 6–12 compact bullets OR a short step-by-step that cover: definition/purpose, preconditions, "
-    "     parameters with units & ranges, edge cases/limits, case distinctions (e.g., different models), "
-    "     and 1 small example.\n"
-    "   - If ambiguous (e.g., multiple builds/versions), do NOT guess: state what info is needed.\n"
-    "5) Every 'output' MUST end with:\n"
-    "   \\n\\nSources:\\n- [<Title>](<URL>)\n"
-    "6) Inputs MUST explicitly mention the entity/topic (avoid vague prompts like 'When was the build?')."
+    "You generate INPUT→OUTPUT training pairs from a small knowledge subgraph and its sources.\n"
+    "Soft guidance (no hard rules):\n"
+    "- Produce natural, strongly varied INPUTs: sometimes questions, sometimes short instructions, sometimes plain keyword-like or statement-style lines.\n"
+    "- Vary the **opening** of inputs explicitly (do not always start with the same leading word). Mix starts like 'How/Which/Why/When', imperative verbs ('Configure/Explain/Outline'), or bare phrases.\n"
+    "- Prefer **unlabeled** inputs: avoid leading headings like 'Keywords:', 'Describe:', 'Question:', 'Task:' at the start. Write the phrase itself instead (e.g., 'Liebherr cooling, emergency mode, zone off').\n"
+    "- Keep the single OUTPUT identical across all variants for the same subgraph.\n"
+    "- OUTPUT depth: start with a 1–2 sentence summary, then compact bullets or a short step-by-step covering purpose, preconditions, parameters with units, limits/edge-cases, and a tiny example.\n"
+    "- If anything is ambiguous, state what is needed instead of guessing.\n"
+    "- Every OUTPUT must end with:\n"
+    "  \\n\\nSources:\\n- [<Title>](<URL>)\n"
+    "- Return strictly NDJSON: one JSON object per line:\n"
+    " {\"input\": str, \"output\": str, \"citations\": [{\"url\": str, \"title\": str, \"page_id\": str}]}\n"
+    "Do not use code fences.\n"
 )
 
 USER_GENERATOR = (
-    "Central entity/topic: {entity}\n"
-    "Facet: {facet_name}\n"
-    "Reasoning subgraph (triples):\n"
+    "Topic: {entity}\n"
+    "Facet (optional): {facet_name}\n"
+    "Knowledge subgraph (triples):\n"
     "{triples_text}\n\n"
-    "Available sources:\n"
+    "Sources:\n"
     "{sources_text}\n\n"
-    "Generate EXACTLY {n} NDJSON lines with varied inputs but identical outputs.\n"
-    "Ensure the output follows the depth rules above and clearly handles ambiguity."
+    "Generate EXACTLY {n} NDJSON lines with **strongly varied INPUT openings** (some questions, some instructions, some statements/keyword-style). "
+    "Avoid leading labels like 'Keywords:' / 'Describe:' / 'Question:' — write the phrase directly. "
+    "Do NOT wrap in a code block. One JSON object per line."
 )
 
-# Paraphraser (Fallback für zusätzliche, wirklich unterschiedliche Inputs)
 SYSTEM_PARAPHRASE = (
     "You paraphrase user prompts into mutually dissimilar forms while preserving intent and constraints. "
     "Avoid trivial synonym swaps and near-duplicates."
@@ -311,19 +292,16 @@ class Triple(Dict[str, Any]):
 
 _BAD_ENTITY_RX = re.compile(
     r"^(?:[0-9]+|[A-Za-z]*\d+[A-Za-z]*|[A-F0-9\-]{6,}|[_.\-]+)$"
-)  # reine Zahlen, codehafte Token, GUID-ähnlich, nur Zeichen
+)
 
 def _is_informative_entity(s: str) -> bool:
     s = (s or "").strip()
     if len(s) < 3:
         return False
-    # mindestens ein Wort mit >=3 Buchstaben
     if not re.search(r"[A-Za-z]{3,}", s):
         return False
-    # nicht wie '12345', 'CFG_01', 'A1B2C3', '{GUID}'
     if _BAD_ENTITY_RX.match(s):
         return False
-    # keine reinen Dateinamen ohne nutzbaren Namen
     if re.search(r"\.(bin|hex|cfg|ini|json|txt|csv|log)$", s, flags=re.I):
         return False
     return True
@@ -362,20 +340,16 @@ def extract_triples_for_page(endpoint: str, model: str, title: str, url: str, pa
         if len(t["subj"]) < 2 or len(t["pred"]) < 2 or len(t["obj"]) < 1:
             continue
         triples.append(t)
-    # lokale Filterung (IDs/Kürzel raus)
     triples = _filter_and_clean_triples(triples)
     return triples
 
 def normalize_triples(endpoint: str, model: str, triples: List[Triple],
                       temperature: float, max_tokens: int, timeout: int, retries: int) -> List[Triple]:
-    """Optionaler Normalisierer — wenn nach dem Filter noch viel Mist übrig ist."""
     if not triples:
         return triples
-    # Nur bei „auffällig kurzen“ Entitäten aufrufen
     need = any(len(t["subj"]) < 6 or len(t["obj"]) < 6 for t in triples)
     if not need:
         return triples
-    # Bis zu ~40 Triples je Call
     chunk = triples[:40]
     nd = "\n".join(json.dumps(t, ensure_ascii=False) for t in chunk)
     sys_msg = {"role": "system", "content": SYSTEM_KG_NORMALIZER}
@@ -473,7 +447,6 @@ def is_low_quality_input(q: str, ent_toks: Set[str]) -> bool:
         return True
     ql = q.lower()
     if not any(t in ql for t in ent_toks):
-        # vermeidet vage „When was the build?“
         vague = re.search(r"\b(build|version|date|when|what)\b", ql) is not None
         return vague
     return False
@@ -487,7 +460,6 @@ def fixup_input(q: str, entity: str) -> str:
         q = q.rstrip(".") + f"{joiner}{entity}".rstrip() + "."
     return q
 
-# Paraphrasen abrufen (Fallback)
 def paraphrase_inputs(endpoint: str, model: str, entity: str, canonical_output: str,
                       existing: List[str], need: int,
                       temperature: float, max_tokens: int, timeout: int, retries: int) -> List[str]:
@@ -528,13 +500,13 @@ def template_prompts(entity: str, facet_name: str, k: int) -> List[str]:
 # [GENERATION & HARMONISIERUNG]
 # ──────────────────────────────────────────────────────────────────────────────
 
-_MIN_INPUT_JACCARD = 0.8  # Ähnlichkeitsschwelle – hohe Dissimilarität erzwingen
+_MIN_INPUT_JACCARD = 0.8
 
 def _harmonize_rows(rows: List[Dict[str, Any]],
                     subgraph_sources: List[Dict[str, str]],
                     n_variants: int,
                     max_sources_per_output: Optional[int]) -> List[Dict[str, Any]]:
-    # 1) Dis-similar Inputs auswählen
+    # 1) Dissimile Inputs wählen
     uniq_rows: List[Dict[str, Any]] = []
     for r in rows:
         inp = str(r.get("input", "")).strip()
@@ -627,7 +599,7 @@ def generate_variants_for_facet(endpoint: str,
     rows = parse_ndjson_objects(raw, min_keys={"input", "output"})
     rows = _harmonize_rows(rows, srcs, n_variants, max_sources_per_output)
 
-    # Robustheit: auffüllen bis N
+    # Robust: Auffüllen bis N
     if len(rows) < n_variants:
         ent_toks = entity_tokens(entity)
         canonical_output = rows[0]["output"] if rows else ""
@@ -807,7 +779,6 @@ def main():
                 max_tokens=args.extractor_max_tokens,
                 timeout=args.timeout, retries=args.retries,
             )
-            # Optional: Kanonisieren (gleicher Endpoint)
             triples = normalize_triples(
                 endpoint=args.endpoint, model=args.model, triples=triples,
                 temperature=args.extractor_temperature,
