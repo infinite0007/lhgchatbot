@@ -36,7 +36,7 @@ SYSTEM_PROMPT = (
 # =========================
 st.set_page_config(page_title="Liebherr Chatbot", page_icon="🦜", layout="wide")
 st.title("🦜 RAG Chat – Liebherr Software")
-st.caption("Has all infos under Confluence Software: https://helpd-doc.liebherr.com/spaces/SWEIG/pages/43424891/SW-Platform-Development+Home+E2020 by Julian Lingnau")
+st.caption("Retrieval-Augmented Generation (RAG) with a vector database. It retrieves enterprise knowledge from the [Confluence Software](https://helpd-doc.liebherr.com/spaces/SWEIG/pages/43424891/SW-Platform-Development+Home+E2020) space — by [Julian Lingnau](https://de.linkedin.com/in/julian-lingnau-05b623162).")
 
 with st.sidebar:
     st.subheader("Settings")
