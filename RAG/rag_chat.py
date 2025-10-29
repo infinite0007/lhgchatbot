@@ -17,7 +17,7 @@ from langchain_core.runnables import RunnablePassthrough
 DATABASE_LOCATION = "chroma_db"
 COLLECTION_NAME   = "rag_data"
 EMBEDDING_MODEL   = "sentence-transformers/all-MiniLM-L6-v2"
-HF_MODEL_PATH     = "../Falcon3-1B-Instruct"  # dein lokales Modell
+HF_MODEL_PATH     = "../gemma-3-4b-Instruct"  # dein lokales Modell Instruct Modelle empfohlen da diese wissen wan man aufhören muss und genau auf Frage Antwort trainiert sind. Base Modelle generieren oft nach Antwort neue Fragen und sind nicht speziell fürs Chatten trainiert also Anwendungsfall ab 4b Modelle empfohlen um auch komplexe Eingaben oder kombinierte zu verstehen
 
 TOP_K        = 6
 USE_MMR      = False
@@ -27,7 +27,8 @@ MAX_TOKENS   = 300
 SYSTEM_PROMPT = (
     "You are a precise assistant for enterprise knowledge.\n"
     "Answer ONLY using the provided context. If the answer is not in the context, reply: 'Not in context.'\n"
-    "Keep answers concise. Cite sources as URLs at the end if available."
+    "Keep answers concise. Cite sources as URLs at the end if available.\n"
+    "Do NOT ask or continue with new questions. Stop after giving the answer."
 )
 
 # =========================
@@ -97,6 +98,7 @@ def load_llm(model_path: str, max_new_tokens: int, temperature: float) -> Huggin
         max_new_tokens=max_new_tokens,
         temperature=temperature,
         do_sample=bool(temperature > 0.0),
+        return_full_text=False,  # False => gibt nur Antwort, nicht Prompt/Quellen zusätzlich - bei True sieht man auch woher er die Infos im Text zusammengestellt hat
         pad_token_id=tok.eos_token_id if tok.eos_token_id is not None else None,
     )
     return HuggingFacePipeline(pipeline=gen)
