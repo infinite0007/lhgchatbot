@@ -64,8 +64,8 @@ falcon_env
 
 # canonical extractor
 data/
-chroma_db
-cag/
+chroma_db/
+cag_cache/
 finetune/
 finetunedmodels/
 llama.cpp/
