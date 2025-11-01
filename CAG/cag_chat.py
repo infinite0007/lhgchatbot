@@ -31,7 +31,7 @@ except Exception:
 # =========================
 CACHE_DIR        = "cag_cache"                  # Output von deinem CAG-Indexer (embeddings.npy, texts.jsonl, meta.jsonl)
 EMBEDDING_MODEL  = "sentence-transformers/all-MiniLM-L6-v2"
-HF_MODEL_PATH    = "../gemma-3-4b-Instruct"       # lokales Instruct-Modell
+HF_MODEL_PATH    = "../gemma-3-4b-Instruct"     # lokales Instruct-Modell
 
 TOP_K        = 6
 TEMPERATURE  = 0.1
@@ -69,7 +69,9 @@ with st.sidebar:
     k          = st.slider("Top-K", 1, 20, TOP_K, 1)
     temp       = st.slider("Temperature", 0.0, 1.5, TEMPERATURE, 0.05)
     max_tokens = st.slider("Max new tokens", 64, 1024, MAX_TOKENS, 32)
-    debug_mode = st.radio("Further debugging", ["Off", "On"], index=0) == "On"
+    # Neu: identische Toggles wie im RAG-Chat (nur hinzugefügt; sonst nichts verändert)
+    follow_up_active = st.toggle("Follow-up question", value=True)
+    debug_mode       = st.toggle("Further debugging", value=False)
 
 # =========================
 # Cache laden (schnell & speicherschonend)
@@ -77,7 +79,7 @@ with st.sidebar:
 @st.cache_resource(show_spinner=True)
 def load_cag_cache(cache_dir: str):
     cdir = Path(cache_dir)
-    emb = np.load(cdir / "embeddings.npy", mmap_mode="r")  # (N, D), bereits L2-normalized gespeichert
+    emb = np.load(cdir / "embeddings.npy", mmap_mode="r")  # (N, D), angenommen bereits L2-normalized gespeichert
     # texts.jsonl: pro Zeile ein Chunk-Text
     texts: List[str] = []
     with open(cdir / "texts.jsonl", "r", encoding="utf-8") as f:
@@ -126,7 +128,7 @@ query_encoder = load_query_encoder(EMBEDDING_MODEL)
 # =========================
 @st.cache_resource(show_spinner=True)
 def load_llm(model_path: str, max_new_tokens: int, temperature: float, debug: bool) -> HuggingFacePipeline:
-    tok = AutoTokenizer.from_pretrained(model_path, use_fast=True, local_files_only=True,)
+    tok = AutoTokenizer.from_pretrained(model_path, use_fast=True, local_files_only=True)
     mdl = AutoModelForCausalLM.from_pretrained(
         model_path,
         device_map="auto",
@@ -154,7 +156,7 @@ def _faiss_build_index(emb: np.ndarray):
     # Cosine via inner product bei l2-normalized Vektoren
     index = faiss.IndexFlatIP(emb.shape[1])
     if faiss.get_num_gpus() > 0:
-        res = faiss.StandardGpuResources()
+        _ = faiss.StandardGpuResources()
         index = faiss.index_cpu_to_all_gpus(index)  # verteilt auf alle GPUs
     index.add(emb.astype(np.float32))
     return index
@@ -271,6 +273,42 @@ def build_topk_section(topk_list: List[Tuple[str, str, float]]) -> str:
         lines.append(f"- {title}: {url} (SCORE={score:.4f})")
     return "Top-K searched in:\n\n" + "\n".join(lines)
 
+# ========= History-aware Query-Rewriting (nur wenn Follow-up aktiv) =========
+def _history_window(messages: List[Dict[str, str]], max_pairs: int = 3) -> List[Dict[str, str]]:
+    """Nimmt die letzten max_pairs User/Assistant-Paare (ohne den aktuellen Input)."""
+    hist = []
+    for m in messages:
+        if m.get("role") in ("user", "assistant"):
+            hist.append({"role": m["role"], "content": m["content"]})
+    return hist[-(max_pairs*2):] if hist else []
+
+def _rewrite_with_history(original_q: str, history_snippets: List[Dict[str, str]]) -> str:
+    """
+    Nutzt dasselbe LLM deterministisch (temp=0.0), um Folgefragen zu disambiguieren.
+    Gibt bei Fehlschlag die Originalfrage zurück.
+    """
+    if not history_snippets:
+        return original_q
+    try:
+        hist_txt = "\n".join(
+            [f"{h['role'].capitalize()}: {h['content']}" for h in history_snippets[-6:]]
+        )
+        prompt = (
+            "Rewrite the user's question so it is fully self-contained and unambiguous, "
+            "based only on the chat history. Do NOT answer the question. Output only the rewritten question.\n\n"
+            f"Chat history:\n{hist_txt}\n\n"
+            f"User question: {original_q}\n\nRewritten:"
+        )
+        gen = llm.pipeline
+        resp = gen(prompt, max_new_tokens=96, temperature=0.0, do_sample=False, return_full_text=False)
+        text = str(resp[0]["generated_text"]).strip()
+        text = " ".join(text.split()).strip().strip('"').strip("'")
+        if len(text) < 3:
+            return original_q
+        return text
+    except Exception:
+        return original_q
+
 # =========================
 # CAG QA-Pipeline
 # =========================
@@ -278,46 +316,70 @@ def encode_query(q: str) -> np.ndarray:
     qv = query_encoder.encode([q], convert_to_numpy=True, normalize_embeddings=True)  # (1, D)
     return qv[0].astype(np.float32)
 
-def answer_with_sources(question: str, top_k: int, debug: bool) -> Tuple[str, List[Tuple[int, str, str, float]]]:
-    qv = encode_query(question)
+def answer_with_sources(question: str, top_k: int, debug: bool, follow_up: bool) -> Tuple[str, List[Tuple[int, str, str, float]]]:
+    # (A) optional: History-aware Rewrite
+    history_used = _history_window(st.session_state.get("messages", []), max_pairs=3)
+    original_q = question
+    effective_q = question
+    if follow_up:
+        effective_q = _rewrite_with_history(original_q, history_used)
+
+    # (B) Retrieval
+    qv = encode_query(effective_q)
     scores, idxs = SEARCH(qv, top_k=max(top_k, 6))  # klein wenig breiter holen
 
-    # 1) Kontext formatieren (inkl. SCORE)
+    # (C) Kontext formatieren (inkl. SCORE)
     context_text, index_map, topk_list = format_context(idxs[:top_k], scores[:top_k])
 
-    # 2) Prompt + Generate
-    prompt = f"{SYSTEM_PROMPT}\n\nContext:\n{context_text}\n\nQuestion: {question}\n\nAnswer:"
+    # (D) Prompt + Generate
+    prompt = f"{SYSTEM_PROMPT}\n\nContext:\n{context_text}\n\nQuestion: {effective_q}\n\nAnswer:"
     out = llm.invoke(prompt)
     full_text = str(out)
 
-    # 3) Nur den eigentlichen Answer-Block isolieren
+    # (E) Nur den eigentlichen Answer-Block isolieren
     answer = extract_answer_block(full_text)
 
-    # 4) Zitate aus Answer-Block extrahieren + validieren
+    # (F) Zitate aus Answer-Block extrahieren + validieren
     used_indices = extract_used_indices(answer)
     available_indices = {i for i, _, _, _ in index_map}
     invalid_indices = used_indices - available_indices
     if invalid_indices:
         answer = remove_invalid_citations(answer, invalid_indices)
         used_indices = extract_used_indices(answer)
-
     valid_indices = sorted(list(used_indices & available_indices))
 
-    # 5) Fallback: Kontext vorhanden aber keine Zitate gesetzt → [1] an 1. Satz
+    # (G) Fallback: Kontext vorhanden aber keine Zitate gesetzt → [1] an 1. Satz
     if not valid_indices and index_map and answer.strip().lower() != "not in context.":
         answer = re.sub(r"([.!?])(\s|$)", r" [1]\1\2", answer, count=1)
         valid_indices = [1]
 
-    # 6) Sections bauen
+    # (H) Sections bauen
     sources_section = build_sources_section(valid_indices, index_map)
 
     debug_sections = ""
     if debug:
         topk_section = build_topk_section(topk_list)
         full_context_dump = f"— Full Context (as given to LLM) —\n{context_text}"
-        debug_sections = "\n\n" + (topk_section + "\n\n" if topk_section else "") + full_context_dump
+        hist_lines = []
+        if history_used:
+            for h in history_used:
+                role = "User" if h["role"] == "user" else "Assistant"
+                content = h["content"].strip()
+                if len(content) > 500:
+                    content = content[:500] + "…"
+                hist_lines.append(f"{role}: {content}")
+        history_dump = "\n".join(hist_lines) if hist_lines else "(none)"
+        rewrite_dump = (
+            "— Follow-up rewrite applied: YES —\n"
+            f"— Original question —\n{original_q}\n\n"
+            f"— Effective question —\n{effective_q}\n\n"
+            f"— History used (window=3) —\n{history_dump}"
+            if follow_up else
+            "— Follow-up rewrite applied: NO —"
+        )
+        debug_sections = "\n\n" + (topk_section + "\n\n" if topk_section else "") + rewrite_dump + "\n\n" + full_context_dump
 
-    # 7) Finale Antwort
+    # (I) Finale Antwort
     final_text = f"{answer}\n\n{sources_section}{debug_sections}"
     return final_text, index_map
 
@@ -341,7 +403,7 @@ if user_q:
     with st.chat_message("assistant"):
         with st.spinner("Retrieving (CAG) & generating …"):
             try:
-                ans, _ = answer_with_sources(user_q, k, debug_mode)
+                ans, _ = answer_with_sources(user_q, k, debug_mode, follow_up_active)
             except Exception as e:
                 st.error(f"Fehler: {e}")
                 st.stop()
