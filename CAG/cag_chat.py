@@ -2,9 +2,9 @@
 # -*- coding: utf-8 -*-
 # run with: streamlit run .\cag_chat.py
 
-import os, json
+import os, json, re
 from pathlib import Path
-from typing import List, Tuple, Any
+from typing import List, Tuple, Any, Dict, Optional
 
 import numpy as np
 import streamlit as st
@@ -12,27 +12,49 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
 from langchain_community.llms import HuggingFacePipeline
 from sentence_transformers import SentenceTransformer
 
+# Optional FAISS (für sehr große Caches und/oder GPU Acceleration)
+try:
+    import faiss  # pip install faiss-cpu  (oder faiss-gpu)
+    HAS_FAISS = True
+except Exception:
+    HAS_FAISS = False
+
+# Optional PyTorch für CUDA-Matmul (falls keine FAISS-GPU)
+try:
+    import torch
+    HAS_TORCH = True
+except Exception:
+    HAS_TORCH = False
+
 # =========================
 # KONFIG – hier anpassen
 # =========================
 CACHE_DIR        = "cag_cache"                  # Output von deinem CAG-Indexer (embeddings.npy, texts.jsonl, meta.jsonl)
 EMBEDDING_MODEL  = "sentence-transformers/all-MiniLM-L6-v2"
-HF_MODEL_PATH    = "../gemma-3-4b-Instruct"     # lokales Instruct-Modell
+HF_MODEL_PATH    = "../gemma-3-4b-Instruct"       # lokales Instruct-Modell
 
 TOP_K        = 6
 TEMPERATURE  = 0.1
-MAX_TOKENS   = 300
+MAX_TOKENS   = 450
 SNIPPET_CHARS = 900  # max. Zeichen pro Treffer im Prompt
+USE_FAISS      = True  # wenn verfügbar, nutze FAISS (CPU/GPU). Fallback: NumPy / Torch
 
 SYSTEM_PROMPT = (
     "You are a precise assistant for enterprise knowledge.\n"
-    "Answer ONLY using the provided context. If the answer is not in the context, reply: 'Not in context.'\n"
-    "Keep answers concise. Cite sources as URLs at the end if available.\n"
-    "Do NOT ask or continue with new questions. Stop after giving the answer."
+    "Follow these steps strictly and in order:\n"
+    "1. Before searching, check the question for spelling or typing errors and silently correct them.\n"
+    "2. Answer ONLY using the provided context.\n"
+    "3. If no relevant information can be found, reply only with: 'Not in context.' and do not cite any sources.\n"
+    "4. If the question can be partially answered, provide only the part that is supported by the context.\n"
+    "5. Keep answers concise and factual.\n"
+    "6. Add cites into the text but only if it's available in the provided context. Use [1], [2], ... markers.\n"
+    "7. Do NOT invent sources or add information not in the context.\n"
+    "8. Do NOT ask follow-up questions. Stop after giving the answer and sources.\n"
+    "This is important — follow the steps exactly and do not hallucinate."
 )
 
 # =========================
-# UI – identisch zum RAG-Chat
+# UI – identisch zur RAG-Optik
 # =========================
 st.set_page_config(page_title="Liebherr Chatbot", page_icon="🦚", layout="wide")
 st.title("🦚 CAG Chat – Liebherr Software")
@@ -40,7 +62,6 @@ st.caption("Cache-Augmented Generation (CAG) with a local embedding cache. It an
 
 with st.sidebar:
     st.subheader("Settings")
-    # gleiche Felder wie im RAG-Chat:
     st.text_input("DB path", value=CACHE_DIR, disabled=True)
     st.text_input("Collection", value="-", disabled=True)
     st.text_input("Embeddings", value=EMBEDDING_MODEL, disabled=True)
@@ -48,15 +69,15 @@ with st.sidebar:
     k          = st.slider("Top-K", 1, 20, TOP_K, 1)
     temp       = st.slider("Temperature", 0.0, 1.5, TEMPERATURE, 0.05)
     max_tokens = st.slider("Max new tokens", 64, 1024, MAX_TOKENS, 32)
+    debug_mode = st.radio("Further debugging", ["Off", "On"], index=0) == "On"
 
 # =========================
-# Cache laden (einheitlich)
+# Cache laden (schnell & speicherschonend)
 # =========================
 @st.cache_resource(show_spinner=True)
 def load_cag_cache(cache_dir: str):
     cdir = Path(cache_dir)
-    # Embeddings speichere großfreundlich mit mmap
-    emb = np.load(cdir / "embeddings.npy", mmap_mode="r")  # shape: (N, D)
+    emb = np.load(cdir / "embeddings.npy", mmap_mode="r")  # (N, D), bereits L2-normalized gespeichert
     # texts.jsonl: pro Zeile ein Chunk-Text
     texts: List[str] = []
     with open(cdir / "texts.jsonl", "r", encoding="utf-8") as f:
@@ -78,11 +99,9 @@ def load_cag_cache(cache_dir: str):
             cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
         except Exception:
             cfg = {}
-    # Vorabnormierung der Embeddings (Cosine = Dot bei L2=1)
-    # mmap ist read-only; daher kopieren wir in float32 und normalisieren einmalig
+
+    # np.memmap → float32 Array in RAM (einmalig). embeddings.npy ist bereits normalized. # Speicherschonend (echtes memmap) – auskommentierte Variante Array bleibt gemappt. RAM-Peak klein, aber Zugriff ist langsamer (Page-Faults, I/O). Sinnvoll, wenn das Embedding-File größer als euer RAM ist. Aber das wird aktuell nicht nötig sein.
     emb_arr = np.array(emb, dtype=np.float32, copy=True)
-    norms = np.linalg.norm(emb_arr, axis=1, keepdims=True) + 1e-12
-    emb_arr /= norms
     return emb_arr, texts, metas, cfg
 
 try:
@@ -106,12 +125,13 @@ query_encoder = load_query_encoder(EMBEDDING_MODEL)
 # LLM lazy & gecacht laden
 # =========================
 @st.cache_resource(show_spinner=True)
-def load_llm(model_path: str, max_new_tokens: int, temperature: float) -> HuggingFacePipeline:
-    tok = AutoTokenizer.from_pretrained(model_path, use_fast=True)
+def load_llm(model_path: str, max_new_tokens: int, temperature: float, debug: bool) -> HuggingFacePipeline:
+    tok = AutoTokenizer.from_pretrained(model_path, use_fast=True, local_files_only=True,)
     mdl = AutoModelForCausalLM.from_pretrained(
         model_path,
         device_map="auto",
         torch_dtype="auto",
+        local_files_only=True,
     )
     gen = pipeline(
         "text-generation",
@@ -120,61 +140,186 @@ def load_llm(model_path: str, max_new_tokens: int, temperature: float) -> Huggin
         max_new_tokens=max_new_tokens,
         temperature=temperature,
         do_sample=bool(temperature > 0.0),
-        return_full_text=False, # False => gibt nur Antwort, nicht Prompt/Quellen zusätzlich - bei True sieht man auch woher er die Infos im Text zusammengestellt hat
+        return_full_text=True,
         pad_token_id=tok.eos_token_id if tok.eos_token_id is not None else None,
     )
     return HuggingFacePipeline(pipeline=gen)
 
-llm = load_llm(HF_MODEL_PATH, max_tokens, temp)
+llm = load_llm(HF_MODEL_PATH, max_tokens, temp, debug_mode)
 
 # =========================
-# CAG: Cosine-Search + Prompting
+# Retrieval (Cosine) – mit optionaler FAISS / CUDA-Beschleunigung
 # =========================
-def encode_query(q: str) -> np.ndarray:
-    qv = query_encoder.encode([q], convert_to_numpy=True, normalize_embeddings=True)  # (1, D), L2-normalized
-    return qv[0]
+def _faiss_build_index(emb: np.ndarray):
+    # Cosine via inner product bei l2-normalized Vektoren
+    index = faiss.IndexFlatIP(emb.shape[1])
+    if faiss.get_num_gpus() > 0:
+        res = faiss.StandardGpuResources()
+        index = faiss.index_cpu_to_all_gpus(index)  # verteilt auf alle GPUs
+    index.add(emb.astype(np.float32))
+    return index
 
-def topk_indices_cosine(qvec: np.ndarray, top_k: int) -> List[int]:
-    # EMB ist L2-normalisiert, qvec auch -> Cosine = Dot
-    scores = EMB @ qvec  # shape: (N,)
-    top_k = min(top_k, scores.shape[0])
-    if top_k <= 0:
-        return []
-    idx = np.argpartition(-scores, top_k - 1)[:top_k]
-    # sortiert nach Score absteigend
-    idx = idx[np.argsort(-scores[idx])]
-    return idx.tolist()
+@st.cache_resource(show_spinner=False)
+def get_search_backend(emb: np.ndarray):
+    """
+    Liefert einen callable search(qvec, top_k) -> (scores, idx) mit dem schnellsten verfügbaren Backend.
+    Reihenfolge: FAISS (GPU/CPU) > Torch CUDA > NumPy.
+    """
+    if USE_FAISS and HAS_FAISS:
+        try:
+            index = _faiss_build_index(emb)
+            def _search_faiss(qv: np.ndarray, top_k: int):
+                D, I = index.search(qv.reshape(1, -1).astype(np.float32), top_k)
+                return D[0].tolist(), I[0].tolist()
+            return _search_faiss, "FAISS"
+        except Exception:
+            pass
 
-def format_context(idxs: List[int]) -> Tuple[str, List[Tuple[str, str]]]:
-    lines, sources = [], []
+    if HAS_TORCH and torch.cuda.is_available():
+        t_emb = torch.from_numpy(emb).to("cuda")
+        def _search_torch(qv: np.ndarray, top_k: int):
+            t_q = torch.from_numpy(qv.reshape(1, -1)).to("cuda")
+            scores = torch.matmul(t_emb, t_q.t()).squeeze(1)  # (N,)
+            topk = min(top_k, scores.shape[0])
+            vals, idx = torch.topk(scores, k=topk, largest=True, sorted=True)
+            return vals.detach().cpu().numpy().tolist(), idx.detach().cpu().numpy().tolist()
+        return _search_torch, "TorchCUDA"
+
+    # Fallback: NumPy (schnell genug für mittlere Größen)
+    def _search_numpy(qv: np.ndarray, top_k: int):
+        s = EMB @ qv  # (N,), Cosine = Dot (l2-normalized)
+        topk = min(top_k, s.shape[0])
+        idx = np.argpartition(-s, topk - 1)[:topk]
+        idx = idx[np.argsort(-s[idx])]
+        return s[idx].tolist(), idx.tolist()
+    return _search_numpy, "NumPy"
+
+SEARCH, BACKEND = get_search_backend(EMB)
+st.caption(f"Retrieval Backend: **{BACKEND}**")
+
+# =========================
+# Hilfsfunktionen: Zitate & Anzeige wie im RAG
+# =========================
+RE_CITATIONS = re.compile(r"\[(\d+)\]")
+
+def canonicalize_url(u: str) -> str:
+    if not u:
+        return u
+    u = u.strip().split("#")[0]
+    return u[:-1] if u.endswith("/") else u
+
+def extract_used_indices(text: str) -> set:
+    return set(int(m) for m in RE_CITATIONS.findall(text))
+
+def remove_invalid_citations(text: str, invalid: set[int]) -> str:
+    for i in sorted(invalid, reverse=True):
+        text = re.sub(rf"(?<!\d)\[{i}\](?!\d)", "", text)
+    return re.sub(r"\s{2,}", " ", text).strip()
+
+def _score_key(title: str, url: str) -> Tuple[str, str]:
+    return (title or "").strip(), canonicalize_url(url or "")
+
+def format_context(idxs: List[int], scores: List[float]) -> Tuple[str, List[Tuple[int, str, str, float]], List[Tuple[str, str, float]]]:
+    """
+    Returns:
+      - context_text: nummerierte Einträge [1] ... [n] (inkl. SCORE)
+      - index_map: [(index, title, url, score)]
+      - topk_list: deduped [(title, url, score)] für Top-K-Anzeige
+    """
     seen = set()
-    for i in idxs:
+    lines = []
+    index_map = []
+    topk_list = []
+    for rank, (i, sc) in enumerate(zip(idxs, scores), start=1):
         meta = METAS[i] if i < len(METAS) else {}
-        title = meta.get("title") or "Source"
-        url   = meta.get("url") or meta.get("source") or ""
+        title = meta.get("title") or f"Source {rank}"
+        url   = canonicalize_url(meta.get("url") or meta.get("source") or "")
         snippet = (TEXTS[i] if i < len(TEXTS) else "").strip()
         if SNIPPET_CHARS and len(snippet) > SNIPPET_CHARS:
             snippet = snippet[:SNIPPET_CHARS] + "…"
-        lines.append(f"### {title} — {url}\n{snippet}\n")
+        lines.append(f"[{rank}] {title} — {url} (SCORE={float(sc):.4f})\n{snippet}\n")
+        index_map.append((rank, title, url, float(sc)))
         key = (title, url)
         if key not in seen and (title or url):
             seen.add(key)
-            sources.append(key)
-    return "\n".join(lines), sources
+            topk_list.append((title, url, float(sc)))
+    return "\n".join(lines), index_map, topk_list
 
-def answer_with_sources(question: str, top_k: int) -> Tuple[str, List[Tuple[str, str]]]:
+def extract_answer_block(full_text: str) -> str:
+    m = re.search(r"Answer:\s*(.*)", full_text, re.DOTALL | re.IGNORECASE)
+    return m.group(1).strip() if m else full_text.strip()
+
+def build_sources_section(valid_indices: List[int], index_map: List[Tuple[int, str, str, float]]) -> str:
+    if not valid_indices:
+        return "Sources used:\n- (no valid cited sources found in retrieved context)"
+    idx_to_meta = {i: (t, u) for i, t, u, _ in index_map}
+    used_sources = []
+    seen_urls = set()
+    for i in valid_indices:
+        t, u = idx_to_meta[i]
+        u_c = canonicalize_url(u)
+        if u_c not in seen_urls:
+            seen_urls.add(u_c)
+            used_sources.append(f"- [{i}] {t}: {u}")
+    return "Sources used:\n\n" + "\n".join(used_sources)
+
+def build_topk_section(topk_list: List[Tuple[str, str, float]]) -> str:
+    if not topk_list:
+        return ""
+    lines = []
+    for title, url, score in topk_list:
+        lines.append(f"- {title}: {url} (SCORE={score:.4f})")
+    return "Top-K searched in:\n\n" + "\n".join(lines)
+
+# =========================
+# CAG QA-Pipeline
+# =========================
+def encode_query(q: str) -> np.ndarray:
+    qv = query_encoder.encode([q], convert_to_numpy=True, normalize_embeddings=True)  # (1, D)
+    return qv[0].astype(np.float32)
+
+def answer_with_sources(question: str, top_k: int, debug: bool) -> Tuple[str, List[Tuple[int, str, str, float]]]:
     qv = encode_query(question)
-    idxs = topk_indices_cosine(qv, top_k)
-    context_text, sources = format_context(idxs)
+    scores, idxs = SEARCH(qv, top_k=max(top_k, 6))  # klein wenig breiter holen
+
+    # 1) Kontext formatieren (inkl. SCORE)
+    context_text, index_map, topk_list = format_context(idxs[:top_k], scores[:top_k])
+
+    # 2) Prompt + Generate
     prompt = f"{SYSTEM_PROMPT}\n\nContext:\n{context_text}\n\nQuestion: {question}\n\nAnswer:"
     out = llm.invoke(prompt)
-    text = str(out)
-    if sources:
-        src_lines = []
-        for title, url in sources:
-            src_lines.append(f"- {title}: {url}" if url else f"- {title}")
-        text += "\n\nSources:\n" + "\n".join(src_lines)
-    return text, sources
+    full_text = str(out)
+
+    # 3) Nur den eigentlichen Answer-Block isolieren
+    answer = extract_answer_block(full_text)
+
+    # 4) Zitate aus Answer-Block extrahieren + validieren
+    used_indices = extract_used_indices(answer)
+    available_indices = {i for i, _, _, _ in index_map}
+    invalid_indices = used_indices - available_indices
+    if invalid_indices:
+        answer = remove_invalid_citations(answer, invalid_indices)
+        used_indices = extract_used_indices(answer)
+
+    valid_indices = sorted(list(used_indices & available_indices))
+
+    # 5) Fallback: Kontext vorhanden aber keine Zitate gesetzt → [1] an 1. Satz
+    if not valid_indices and index_map and answer.strip().lower() != "not in context.":
+        answer = re.sub(r"([.!?])(\s|$)", r" [1]\1\2", answer, count=1)
+        valid_indices = [1]
+
+    # 6) Sections bauen
+    sources_section = build_sources_section(valid_indices, index_map)
+
+    debug_sections = ""
+    if debug:
+        topk_section = build_topk_section(topk_list)
+        full_context_dump = f"— Full Context (as given to LLM) —\n{context_text}"
+        debug_sections = "\n\n" + (topk_section + "\n\n" if topk_section else "") + full_context_dump
+
+    # 7) Finale Antwort
+    final_text = f"{answer}\n\n{sources_section}{debug_sections}"
+    return final_text, index_map
 
 # =========================
 # Chat-Verlauf & UI
@@ -196,7 +341,7 @@ if user_q:
     with st.chat_message("assistant"):
         with st.spinner("Retrieving (CAG) & generating …"):
             try:
-                ans, _ = answer_with_sources(user_q, k)
+                ans, _ = answer_with_sources(user_q, k, debug_mode)
             except Exception as e:
                 st.error(f"Fehler: {e}")
                 st.stop()
