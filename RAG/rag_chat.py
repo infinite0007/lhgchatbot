@@ -54,7 +54,8 @@ with st.sidebar:
     k = st.slider("Top-K", 1, 20, TOP_K, 1)
     temp = st.slider("Temperature", 0.0, 1.5, TEMPERATURE, 0.05)
     max_tokens = st.slider("Max new tokens", 64, 1024, MAX_TOKENS, 32)
-    debug_mode = st.radio("Further debugging", ["Off", "On"], index=0) == "On"
+    follow_up_active = st.toggle("Follow-up question", value=True)
+    debug_mode = st.toggle("Further debugging", value=False)
 
 # =========================
 # Vectorstore + Embeddings
@@ -205,18 +206,68 @@ def build_topk_section(topk_list: List[Tuple[str, str, float]]) -> str:
             lines.append(f"- {title}: {url}")
     return "Top-K searched in:\n\n" + "\n".join(lines)
 
+# ========= History-aware Query-Rewriting (nur wenn Follow-up aktiv) =========
+def _history_window(messages: List[Dict[str, str]], max_pairs: int = 3) -> List[Dict[str, str]]:
+    """Nimmt die letzten max_pairs User/Assistant-Paare (ohne den aktuellen Input)."""
+    hist = []
+    for m in messages:
+        if m.get("role") in ("user", "assistant"):
+            hist.append({"role": m["role"], "content": m["content"]})
+    # letztes Element ist meist die letzte Assistant-Antwort (vor der neuen Frage)
+    return hist[-(max_pairs*2):] if hist else []
+
+def _rewrite_with_history(original_q: str, history_snippets: List[Dict[str, str]]) -> str:
+    """
+    Nutzt dasselbe LLM deterministisch (temp=0.0), um Folgefragen zu disambiguieren.
+    Gibt bei Fehlschlag die Originalfrage zurück.
+    """
+    if not history_snippets:
+        return original_q
+
+    # Kompakter Prompt, nur Umschreiben – keine Antwort erzeugen.
+    # Wir verwenden die bestehende Pipeline, aber überschreiben Parameter für deterministische, kurze Outputs.
+    try:
+        hist_txt = "\n".join(
+            [f"{h['role'].capitalize()}: {h['content']}" for h in history_snippets[-6:]]
+        )
+        prompt = (
+            "Rewrite the user's question so it is fully self-contained and unambiguous, "
+            "based only on the chat history. Do NOT answer the question. Output only the rewritten question.\n\n"
+            f"Chat history:\n{hist_txt}\n\n"
+            f"User question: {original_q}\n\nRewritten:"
+        )
+        # Kurz & deterministisch generieren (kein cache-busting an deiner Pipeline)
+        gen = llm.pipeline
+        resp = gen(prompt, max_new_tokens=96, temperature=0.0, do_sample=False, return_full_text=False)
+        text = str(resp[0]["generated_text"]).strip()
+        # Einfache Post-Korrektur: harte Zeilenumbrüche weg, Anführungen entfernen
+        text = " ".join(text.split()).strip().strip('"').strip("'")
+        # Leerer/zu kurzer Output → Fallback
+        if len(text) < 3:
+            return original_q
+        return text
+    except Exception:
+        return original_q
+
 # =========================
 # QA-Pipeline
 # =========================
-def answer_with_sources(question: str, top_k: int, debug: bool) -> Tuple[str, List[Tuple[int, str, str]]]:
+def answer_with_sources(question: str, top_k: int, debug: bool, follow_up: bool) -> Tuple[str, List[Tuple[int, str, str]]]:
+    # (A) optional: History-aware Rewrite
+    history_used = _history_window(st.session_state.get("messages", []), max_pairs=3)
+    original_q = question
+    effective_q = question
+    if follow_up:
+        effective_q = _rewrite_with_history(original_q, history_used)
+
     # 1) Retrieve (für Texte)
     rv = build_retriever(vector_store, top_k, USE_MMR)
-    docs = rv.get_relevant_documents(question)
+    docs = rv.get_relevant_documents(effective_q)
 
     # 1b) Parallel: Scores stabil über (Title, URL) holen
     score_by_key: Dict[Tuple[str, str], float] = {}
     try:
-        docs_with_scores = vector_store.similarity_search_with_score(question, k=max(top_k, len(docs)))
+        docs_with_scores = vector_store.similarity_search_with_score(effective_q, k=max(top_k, len(docs)))
         for d, s in docs_with_scores:
             title = d.metadata.get("title") or ""
             url   = canonicalize_url(d.metadata.get("url") or d.metadata.get("source") or "")
@@ -228,7 +279,7 @@ def answer_with_sources(question: str, top_k: int, debug: bool) -> Tuple[str, Li
     context_text, index_map, topk_list = format_docs(docs, score_by_key=score_by_key)
 
     # 3) Prompt + Generate
-    prompt = f"{SYSTEM_PROMPT}\n\nContext:\n{context_text}\n\nQuestion: {question}\n\nAnswer:"
+    prompt = f"{SYSTEM_PROMPT}\n\nContext:\n{context_text}\n\nQuestion: {effective_q}\n\nAnswer:"
     out = llm.invoke(prompt)
     full_text = str(out)
 
@@ -257,8 +308,28 @@ def answer_with_sources(question: str, top_k: int, debug: bool) -> Tuple[str, Li
     debug_sections = ""
     if debug:
         topk_section = build_topk_section(topk_list)
+        # History-Dump
+        hist_lines = []
+        if history_used:
+            for h in history_used:
+                role = "User" if h["role"] == "user" else "Assistant"
+                # hart kürzen, damit UI nicht explodiert
+                content = h["content"].strip()
+                if len(content) > 500:
+                    content = content[:500] + "…"
+                hist_lines.append(f"{role}: {content}")
+        history_dump = "\n".join(hist_lines) if hist_lines else "(none)"
+
         full_context_dump = f"— Full Context (as given to LLM) —\n{context_text}"
-        debug_sections = "\n\n" + (topk_section + "\n\n" if topk_section else "") + full_context_dump
+        rewrite_dump = (
+            "— Follow-up rewrite applied: YES —\n"
+            f"— Original question —\n{original_q}\n\n"
+            f"— Effective question —\n{effective_q}\n\n"
+            f"— History used (window=3) —\n{history_dump}"
+            if follow_up else
+            "— Follow-up rewrite applied: NO —"
+        )
+        debug_sections = "\n\n" + (topk_section + "\n\n" if topk_section else "") + rewrite_dump + "\n\n" + full_context_dump
 
     # 9) Finale Antwort zusammenbauen
     final_text = f"{answer}\n\n{sources_section}{debug_sections}"
@@ -285,7 +356,7 @@ if user_q:
     with st.chat_message("assistant"):
         with st.spinner("Retrieving & generating …"):
             try:
-                ans, _ = answer_with_sources(user_q, k, debug_mode)
+                ans, _ = answer_with_sources(user_q, k, debug_mode, follow_up_active)
             except Exception as e:
                 st.error(f"Fehler: {e}")
                 st.stop()
