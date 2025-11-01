@@ -16,7 +16,6 @@ DEFAULT_EMBED_MODEL    = "sentence-transformers/all-MiniLM-L6-v2"
 DEFAULT_CHUNK_SIZE     = 1000
 DEFAULT_CHUNK_OVERLAP  = 200
 DEFAULT_BATCH_SIZE     = 256
-DEFAULT_TOP_K          = 5
 
 def iter_jsonl(path: str) -> Iterable[Dict[str, Any]]:
     with open(path, "r", encoding="utf-8") as f:
@@ -52,19 +51,8 @@ def chunk_text(text: str, size: int, overlap: int) -> List[Tuple[int, int, str]]
         i += step
     return chunks
 
-def l2_normalize(mat: np.ndarray) -> np.ndarray:
-    norms = np.linalg.norm(mat, axis=1, keepdims=True) + 1e-12
-    return mat / norms
-
-def cosine_topk(query_vec: np.ndarray, emb: np.ndarray, k: int) -> List[int]:
-    # emb und query_vec sind L2-normalized -> Cosine = Dot
-    scores = emb @ query_vec  # (N,)
-    if k >= len(scores):
-        return list(np.argsort(-scores))
-    return list(np.argpartition(-scores, k)[:k][np.argsort(-scores[np.argpartition(-scores, k)[:k]])])
-
 def main():
-    ap = argparse.ArgumentParser(description="Build CAG-Cache mit Sentence-Transformer-Embeddings (einfach).")
+    ap = argparse.ArgumentParser(description="Build CAG-Cache mit Sentence-Transformer-Embeddings (schnell & simpel).")
     ap.add_argument("--dataset",       default=DEFAULT_DATASET_PATH)
     ap.add_argument("--outdir",        default=DEFAULT_CACHE_DIR)
     ap.add_argument("--embed-model",   default=DEFAULT_EMBED_MODEL)
@@ -72,9 +60,6 @@ def main():
     ap.add_argument("--chunk-overlap", type=int, default=DEFAULT_CHUNK_OVERLAP)
     ap.add_argument("--batch-size",    type=int, default=DEFAULT_BATCH_SIZE)
     ap.add_argument("--max-docs",      type=int, default=DEFAULT_MAX_DOCS)
-    ap.add_argument("--no-normalize",  action="store_true", help="Deaktiviert L2-Normalisierung der Embeddings.")
-    ap.add_argument("--test-query",    type=str, default="", help="Optional: ad-hoc Query gegen frisch gebauten Cache.")
-    ap.add_argument("--top-k",         type=int, default=DEFAULT_TOP_K)
     args = ap.parse_args()
 
     dataset_path   = args.dataset
@@ -123,7 +108,7 @@ def main():
         print("[CAG] Keine Texte gefunden. Abbruch.")
         return
 
-    # 2) Embeddings berechnen
+    # 2) Embeddings berechnen (L2-normalized → Cosine = Dot Product)
     print(f"[CAG] Lade Embedding-Modell: {args.embed_model}")
     model = SentenceTransformer(args.embed_model)
 
@@ -132,15 +117,11 @@ def main():
         texts,
         batch_size=args.batch_size,
         convert_to_numpy=True,
-        normalize_embeddings=not args.no_normalize,  # normalisiere standardmäßig
+        normalize_embeddings=True,
         show_progress_bar=True
     ).astype(np.float32)
 
-    # Fallback-Normalisierung, falls obige Option deaktiviert wurde
-    if args.no_normalize:
-        emb = l2_normalize(emb).astype(np.float32)
-
-    # 3) Speichern
+    # 3) Speichern (großfreundlich, schnell zu laden)
     np.save(outdir / "embeddings.npy", emb)
     with open(outdir / "meta.jsonl", "w", encoding="utf-8") as f:
         for m in metas:
@@ -164,24 +145,6 @@ def main():
 
     print(f"[CAG] Fertig. Chunks: {len(texts)}, Embedding-Dim: {emb.shape[1]}")
     print(f"[CAG] Output: {outdir}/embeddings.npy, meta.jsonl, texts.jsonl, config.json")
-
-    # 4) Optional: Ad-hoc Top-k-Test
-    if args.test_query:
-        print(f"[CAG] Test-Query: {args.test_query!r}")
-        q = model.encode(
-            [args.test_query],
-            convert_to_numpy=True,
-            normalize_embeddings=True
-        ).astype(np.float32)[0]
-        idxs = cosine_topk(q, emb, k=args.top_k)
-        print(f"[CAG] Top-{args.top_k} Chunk-IDs:")
-        for rank, i in enumerate(idxs, 1):
-            m = metas[i]
-            print(f"- {rank:>2}. {m['chunk_id']} | {m.get('title','')} | {m.get('url','')}")
-            # Optional: Kurz-Snippet ausgeben
-            snippet = texts[i][:200].replace("\n", " ")
-            print(f"      {snippet}...")
-        print("[CAG] Test-Query fertig.")
 
 if __name__ == "__main__":
     main()
