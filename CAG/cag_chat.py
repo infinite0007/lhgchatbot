@@ -194,7 +194,7 @@ def get_search_backend(emb: np.ndarray):
     return _search_numpy, "NumPy"
 
 SEARCH, BACKEND = get_search_backend(EMB)
-st.caption(f"Retrieval backend: **{BACKEND}**")
+st.caption(f"Similarity backend: **{BACKEND}** • Metric: **cosine** • Top-K: **{k}**")
 
 # =========================
 # Helpers (citations & formatting)
@@ -395,7 +395,7 @@ if user_q:
         st.write(user_q)
 
     with st.chat_message("assistant"):
-        with st.spinner("Retrieving (CAG) & generating …"):
+        with st.spinner("Searching cache & generating …"):
             try:
                 ans, _ = answer_with_sources(
                     question=user_q,
