@@ -89,6 +89,9 @@ if num_vecs == 0:
     st.error("Chroma DB is empty. Please index first (rag_indexdb.py).")
     st.stop()
 
+mode = "MMR" if USE_MMR else "Top-K cosine"
+st.caption(f"Vector DB: **Chroma** • Retrieval: **{mode}** • Top-K: **{k}**")
+
 def build_retriever(vs: Chroma, top_k: int, use_mmr: bool):
     if not use_mmr:
         return vs.as_retriever(search_kwargs={"k": top_k})
