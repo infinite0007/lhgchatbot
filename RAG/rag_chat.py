@@ -1,28 +1,32 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 # run with: streamlit run .\rag_chat.py
-import re
+
+import os, re, json
 from typing import List, Any, Tuple, Dict, Optional
 
+import numpy as np
 import streamlit as st
 from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
 from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.llms import HuggingFacePipeline
-from langchain_core.runnables import RunnablePassthrough
+from langchain_core.documents import Document
+from sentence_transformers import SentenceTransformer
 
 # =========================
-# KONFIG – hier anpassen
+# CONFIG
 # =========================
 DATABASE_LOCATION = "chroma_db"
 COLLECTION_NAME   = "rag_data"
 EMBEDDING_MODEL   = "sentence-transformers/all-MiniLM-L6-v2"
-HF_MODEL_PATH     = "../gemma-3-4b-Instruct"  # dein lokales Modell Instruct Modelle empfohlen da diese wissen wan man aufhören muss und genau auf Frage Antwort trainiert sind. Base Modelle generieren oft nach Antwort neue Fragen und sind nicht speziell fürs Chatten trainiert also Anwendungsfall ab 4b Modelle empfohlen um auch komplexe Eingaben oder kombinierte zu verstehen
+HF_MODEL_PATH     = "../gemma-3-4b-Instruct"
 
-TOP_K        = 6
-USE_MMR      = False
-TEMPERATURE  = 0.1
-MAX_TOKENS   = 450
+TOP_K         = 6
+USE_MMR       = False
+TEMPERATURE   = 0.1
+MAX_TOKENS    = 450
+SNIPPET_CHARS = 900
 
 SYSTEM_PROMPT = (
     "You are a precise assistant for enterprise knowledge.\n"
@@ -39,7 +43,7 @@ SYSTEM_PROMPT = (
 )
 
 # =========================
-# UI früh rendern
+# UI
 # =========================
 st.set_page_config(page_title="Liebherr Chatbot", page_icon="🦜", layout="wide")
 st.title("🦜 RAG Chat – Liebherr Software")
@@ -50,12 +54,17 @@ with st.sidebar:
     st.text_input("DB path", value=DATABASE_LOCATION, disabled=True)
     st.text_input("Collection", value=COLLECTION_NAME, disabled=True)
     st.text_input("Embeddings", value=EMBEDDING_MODEL, disabled=True)
-    st.text_input("HF model path", value=HF_MODEL_PATH, disabled=True)
-    k = st.slider("Top-K", 1, 20, TOP_K, 1)
-    temp = st.slider("Temperature", 0.0, 1.5, TEMPERATURE, 0.05)
+    st.text_input("HF model", value=HF_MODEL_PATH, disabled=True)
+
+    k          = st.slider("Top-K", 1, 20, TOP_K, 1)
+    temp       = st.slider("Temperature", 0.0, 1.5, TEMPERATURE, 0.05)
     max_tokens = st.slider("Max new tokens", 64, 1024, MAX_TOKENS, 32)
-    follow_up_active = st.toggle("Follow-up question", value=True)
-    debug_mode = st.toggle("Further debugging", value=False)
+    spellfix_active = st.toggle("Spell checker", value=True)
+    debug_mode      = st.toggle("Further debugging", value=False)
+    st.markdown("---")
+    follow_up_active = st.toggle("Follow-up questions", value=True)
+    carry_docs_k     = st.slider("Carryover (docs)", 0, 10, 3, 1)
+    history_turns    = st.slider("History (turns)", 0, 10, 3, 1)
 
 # =========================
 # Vectorstore + Embeddings
@@ -68,38 +77,31 @@ def load_vectorstore(db_dir: str, coll: str, emb_model: str):
 
 vector_store = load_vectorstore(DATABASE_LOCATION, COLLECTION_NAME, EMBEDDING_MODEL)
 
-# Basics anzeigen / leer?
 try:
     info = vector_store.get()
     num_vecs = len(info.get("ids", []))
 except Exception as e:
-    st.error(f"Chroma konnte nicht gelesen werden: {e}")
+    st.error(f"Chroma error: {e}")
     st.stop()
 
-st.info(f"📦 Vektoren in DB: **{num_vecs}**")
+st.info(f"📦 Vectors in DB: **{num_vecs}**")
 if num_vecs == 0:
-    st.error("Die Chroma-DB ist leer. Bitte zuerst indexieren (rag_indexdb.py).")
+    st.error("Chroma DB is empty. Please index first (rag_indexdb.py).")
     st.stop()
 
-# Retriever
 def build_retriever(vs: Chroma, top_k: int, use_mmr: bool):
     if not use_mmr:
         return vs.as_retriever(search_kwargs={"k": top_k})
     return vs.as_retriever(search_type="mmr", search_kwargs={"k": top_k, "fetch_k": max(top_k * 3, 20)})
 
-retriever = build_retriever(vector_store, k, USE_MMR)
-
 # =========================
-# LLM lazy & gecacht laden
+# LLM (cached)
 # =========================
 @st.cache_resource(show_spinner=True)
-def load_llm(model_path: str, max_new_tokens: int, temperature: float, debug: bool) -> HuggingFacePipeline:
-    tok = AutoTokenizer.from_pretrained(model_path, use_fast=True, local_files_only=True,)
+def load_llm(model_path: str, max_new_tokens: int, temperature: float) -> HuggingFacePipeline:
+    tok = AutoTokenizer.from_pretrained(model_path, use_fast=True, local_files_only=True)
     mdl = AutoModelForCausalLM.from_pretrained(
-        model_path,
-        device_map="auto",
-        torch_dtype="auto",
-        local_files_only=True,
+        model_path, device_map="auto", torch_dtype="auto", local_files_only=True
     )
     gen = pipeline(
         "text-generation",
@@ -108,16 +110,24 @@ def load_llm(model_path: str, max_new_tokens: int, temperature: float, debug: bo
         max_new_tokens=max_new_tokens,
         temperature=temperature,
         do_sample=bool(temperature > 0.0),
-        # False => gibt nur Antwort, nicht Prompt/Quellen zusätzlich ins LLM - bei True sieht man auch woher er die Infos im Text zusammengestellt hat
         return_full_text=True,
         pad_token_id=tok.eos_token_id if tok.eos_token_id is not None else None,
     )
     return HuggingFacePipeline(pipeline=gen)
 
-llm = load_llm(HF_MODEL_PATH, max_tokens, temp, debug_mode)
+llm = load_llm(HF_MODEL_PATH, max_tokens, temp)
 
 # =========================
-# RAG-Helfer
+# Optional: Query encoder
+# =========================
+@st.cache_resource(show_spinner=False)
+def load_query_encoder(name: str) -> SentenceTransformer:
+    return SentenceTransformer(name)
+
+query_encoder = load_query_encoder(EMBEDDING_MODEL)
+
+# =========================
+# Helpers
 # =========================
 RE_CITATIONS = re.compile(r"\[(\d+)\]")
 
@@ -125,49 +135,36 @@ def extract_used_indices(text: str) -> set:
     return set(int(m) for m in RE_CITATIONS.findall(text))
 
 def remove_invalid_citations(text: str, invalid: set[int]) -> str:
-    """Entfernt alle [x] aus dem Text, deren x ungültig ist."""
     for i in sorted(invalid, reverse=True):
         text = re.sub(rf"(?<!\d)\[{i}\](?!\d)", "", text)
-    text = re.sub(r"\s{2,}", " ", text).strip()
-    return text
+    return re.sub(r"\s{2,}", " ", text).strip()
 
 def canonicalize_url(u: str) -> str:
-    """Einfache Kanonisierung für Dedupe (remove trailing slash, fragments, whitespace)."""
     if not u:
         return u
-    u = u.strip()
-    u = u.split("#")[0]
-    if u.endswith("/"):
-        u = u[:-1]
-    return u
+    u = u.strip().split("#")[0]
+    return u[:-1] if u.endswith("/") else u
 
 def _score_key(title: str, url: str) -> Tuple[str, str]:
     return (title or "").strip(), canonicalize_url(url or "")
 
 def format_docs(
-    docs: List[Any],
+    docs: List[Document],
     score_by_key: Optional[Dict[Tuple[str, str], float]] = None
 ) -> Tuple[str, List[Tuple[int, str, str]], List[Tuple[str, str, float]]]:
-    """
-    Returns:
-      - context_text: string with numbered entries [1] ... [n] (inkl. SCORE wenn vorhanden)
-      - index_map: list of tuples (index, title, url) for every shown index
-      - topk_list: deduped list of (title, url, score) for the Top-K display
-    """
     seen = set()
-    lines = []
-    index_map = []
-    topk_list = []
+    lines, index_map, topk_list = [], [], []
     for i, d in enumerate(docs):
         idx = i + 1
-        title = d.metadata.get("title") or f"Source {idx}"
-        url   = canonicalize_url(d.metadata.get("url") or d.metadata.get("source") or "")
+        title = (d.metadata or {}).get("title") or f"Source {idx}"
+        url   = canonicalize_url((d.metadata or {}).get("url") or (d.metadata or {}).get("source") or "")
         snippet = (d.page_content or "").strip()
-        snippet = snippet[:900] + ("…" if len(snippet) > 900 else "")
+        if SNIPPET_CHARS and len(snippet) > SNIPPET_CHARS:
+            snippet = snippet[:SNIPPET_CHARS] + "…"
         score = None
         if score_by_key is not None:
             score = score_by_key.get(_score_key(title, url))
-        score_txt = f" (SCORE={score:.4f})" if isinstance(score, (int, float)) else ""
+        score_txt = f" (SCORE={float(score):.4f})" if isinstance(score, (int, float)) else ""
         lines.append(f"[{idx}] {title} — {url}{score_txt}\n{snippet}\n")
         index_map.append((idx, title, url))
         key = (title, url)
@@ -177,7 +174,6 @@ def format_docs(
     return "\n".join(lines), index_map, topk_list
 
 def extract_answer_block(full_text: str) -> str:
-    """Nimmt alles NACH 'Answer:'; Fallback: gesamt."""
     m = re.search(r"Answer:\s*(.*)", full_text, re.DOTALL | re.IGNORECASE)
     return m.group(1).strip() if m else full_text.strip()
 
@@ -185,169 +181,171 @@ def build_sources_section(valid_indices: List[int], index_map: List[Tuple[int, s
     if not valid_indices:
         return "Sources used:\n- (no valid cited sources found in retrieved context)"
     idx_to_meta = {i: (t, u) for i, t, u in index_map}
-    used_sources = []
-    seen_urls = set()
+    used_sources, seen_urls = [], set()
     for i in valid_indices:
         t, u = idx_to_meta[i]
         u_c = canonicalize_url(u)
         if u_c not in seen_urls:
             seen_urls.add(u_c)
-            used_sources.append(f"[{i}] {t}: {u}")
-    return "Sources used:\n\n" + "\n".join(f"- {s}" for s in used_sources)
+            used_sources.append(f"- [{i}] {t}: {u}")
+    return "Sources used:\n\n" + "\n".join(used_sources)
 
 def build_topk_section(topk_list: List[Tuple[str, str, float]]) -> str:
     if not topk_list:
         return ""
     lines = []
     for title, url, score in topk_list:
-        if score == score:  # not NaN
+        if score == score:
             lines.append(f"- {title}: {url} (SCORE={score:.4f})")
         else:
             lines.append(f"- {title}: {url}")
     return "Top-K searched in:\n\n" + "\n".join(lines)
 
-# ========= History-aware Query-Rewriting (nur wenn Follow-up aktiv) =========
-def _history_window(messages: List[Dict[str, str]], max_pairs: int = 3) -> List[Dict[str, str]]:
-    """Nimmt die letzten max_pairs User/Assistant-Paare (ohne den aktuellen Input)."""
-    hist = []
-    for m in messages:
-        if m.get("role") in ("user", "assistant"):
-            hist.append({"role": m["role"], "content": m["content"]})
-    # letztes Element ist meist die letzte Assistant-Antwort (vor der neuen Frage)
-    return hist[-(max_pairs*2):] if hist else []
-
-def _rewrite_with_history(original_q: str, history_snippets: List[Dict[str, str]]) -> str:
-    """
-    Nutzt dasselbe LLM deterministisch (temp=0.0), um Folgefragen zu disambiguieren.
-    Gibt bei Fehlschlag die Originalfrage zurück.
-    """
-    if not history_snippets:
-        return original_q
-
-    # Kompakter Prompt, nur Umschreiben – keine Antwort erzeugen.
-    # Wir verwenden die bestehende Pipeline, aber überschreiben Parameter für deterministische, kurze Outputs.
+# Spelling-only fix (no paraphrase)
+def _fix_spelling_only_llm(text: str) -> str:
     try:
-        hist_txt = "\n".join(
-            [f"{h['role'].capitalize()}: {h['content']}" for h in history_snippets[-6:]]
-        )
         prompt = (
-            "Rewrite the user's question so it is fully self-contained and unambiguous, "
-            "based only on the chat history. Do NOT answer the question. Output only the rewritten question.\n\n"
-            f"Chat history:\n{hist_txt}\n\n"
-            f"User question: {original_q}\n\nRewritten:"
+            "Correct only obvious spelling mistakes in the following text. "
+            "Do not paraphrase, remove, add, or reorder words. "
+            "If there are no mistakes, return it exactly as-is.\n\n"
+            f"Text: {text}\n\nCorrected:"
         )
-        # Kurz & deterministisch generieren (kein cache-busting an deiner Pipeline)
-        gen = llm.pipeline
-        resp = gen(prompt, max_new_tokens=96, temperature=0.0, do_sample=False, return_full_text=False)
-        text = str(resp[0]["generated_text"]).strip()
-        # Einfache Post-Korrektur: harte Zeilenumbrüche weg, Anführungen entfernen
-        text = " ".join(text.split()).strip().strip('"').strip("'")
-        # Leerer/zu kurzer Output → Fallback
-        if len(text) < 3:
-            return original_q
-        return text
+        resp = llm.pipeline(prompt, max_new_tokens=64, temperature=0.0, do_sample=False, return_full_text=False)
+        out = str(resp[0]["generated_text"]).strip()
+        if len(out) == 0 or out.lower() in {"n/a", "none"}:
+            return text
+        return out
     except Exception:
-        return original_q
+        return text
+
+# History / Carryover
+def _history_snippets(messages: List[Dict[str, str]], turns: int) -> str:
+    if turns <= 0 or not messages:
+        return ""
+    hist = []
+    i = len(messages) - 1
+    if i >= 0 and messages[i].get("role") == "user":
+        i -= 1
+    collected_pairs = 0
+    while i >= 1 and collected_pairs < turns:
+        if messages[i].get("role") == "assistant" and messages[i-1].get("role") == "user":
+            u = messages[i-1].get("content", "").strip()
+            a = messages[i].get("content", "").strip()
+            hist.append(f"User: {u}\nAssistant: {a}")
+            collected_pairs += 1
+            i -= 2
+        else:
+            i -= 1
+    hist.reverse()
+    return "\n\n".join(hist)
+
+def _dedup_docs(docs: List[Document]) -> List[Document]:
+    seen, out = set(), []
+    for d in docs:
+        title = (d.metadata or {}).get("title") or ""
+        url   = canonicalize_url((d.metadata or {}).get("url") or (d.metadata or {}).get("source") or "")
+        key = (title.strip(), url)
+        if key not in seen:
+            seen.add(key)
+            out.append(d)
+    return out
 
 # =========================
 # QA-Pipeline
 # =========================
-def answer_with_sources(question: str, top_k: int, debug: bool, follow_up: bool) -> Tuple[str, List[Tuple[int, str, str]]]:
-    # (A) optional: History-aware Rewrite
-    history_used = _history_window(st.session_state.get("messages", []), max_pairs=3)
+def answer_with_sources(
+    question: str,
+    top_k: int,
+    debug: bool,
+    follow_up_on: bool,
+    carry_k: int,
+    hist_turns: int
+) -> Tuple[str, List[Tuple[int, str, str]]]:
+
     original_q = question
-    effective_q = question
-    if follow_up:
-        effective_q = _rewrite_with_history(original_q, history_used)
+    if spellfix_active:
+        question = _fix_spelling_only_llm(question)
 
-    # 1) Retrieve (für Texte)
     rv = build_retriever(vector_store, top_k, USE_MMR)
-    docs = rv.get_relevant_documents(effective_q)
+    fresh_docs: List[Document] = rv.get_relevant_documents(question)
 
-    # 1b) Parallel: Scores stabil über (Title, URL) holen
     score_by_key: Dict[Tuple[str, str], float] = {}
     try:
-        docs_with_scores = vector_store.similarity_search_with_score(effective_q, k=max(top_k, len(docs)))
-        for d, s in docs_with_scores:
-            title = d.metadata.get("title") or ""
-            url   = canonicalize_url(d.metadata.get("url") or d.metadata.get("source") or "")
+        docs_scores = vector_store.similarity_search_with_score(question, k=max(top_k, len(fresh_docs)))
+        for d, s in docs_scores:
+            title = (d.metadata or {}).get("title") or ""
+            url   = canonicalize_url((d.metadata or {}).get("url") or (d.metadata or {}).get("source") or "")
             score_by_key[_score_key(title, url)] = float(s)
     except Exception:
-        pass  # falls DB oder Backend Scores nicht liefert
+        pass
 
-    # 2) Kontexte vorbereiten (mit Scores)
-    context_text, index_map, topk_list = format_docs(docs, score_by_key=score_by_key)
+    # Follow-up OFF ⇒ no carryover, no history
+    last_docs: List[Document] = st.session_state.get("last_docs", []) if follow_up_on else []
+    carry_docs = (last_docs[:carry_k] if (follow_up_on and last_docs and carry_k > 0) else [])
+    merged_docs = _dedup_docs(carry_docs + fresh_docs)[:max(top_k, len(carry_docs))]
+    show_docs = merged_docs[:top_k] if len(merged_docs) >= top_k else merged_docs
 
-    # 3) Prompt + Generate
-    prompt = f"{SYSTEM_PROMPT}\n\nContext:\n{context_text}\n\nQuestion: {effective_q}\n\nAnswer:"
+    context_text, index_map, topk_list = format_docs(show_docs, score_by_key=score_by_key)
+
+    hist_block = _history_snippets(st.session_state.get("messages", []), hist_turns) if follow_up_on else ""
+    history_section = f"\n\n---\nRecent chat (for reference only):\n{hist_block}\n\n---\n" if hist_block else ""
+
+    prompt = f"{SYSTEM_PROMPT}\n\nContext:\n{context_text}{history_section}\nQuestion: {question}\n\nAnswer:"
     out = llm.invoke(prompt)
     full_text = str(out)
 
-    # 4) Nur den eigentlichen Answer-Block isolieren
     answer = extract_answer_block(full_text)
+    is_no_context = (answer.strip().lower() == "not in context.")
 
-    # 5) Zitate NUR aus dem Answer-Block extrahieren + validieren
-    used_indices = extract_used_indices(answer)
-    available_indices = {i for i, _, _ in index_map}
-    invalid_indices = used_indices - available_indices
-    if invalid_indices:
-        answer = remove_invalid_citations(answer, invalid_indices)
+    valid_indices: List[int] = []
+    sources_section = ""
+    if not is_no_context:
         used_indices = extract_used_indices(answer)
+        available_indices = {i for i, _, _ in index_map}
+        invalid_indices = used_indices - available_indices
+        if invalid_indices:
+            answer = remove_invalid_citations(answer, invalid_indices)
+            used_indices = extract_used_indices(answer)
+        valid_indices = sorted(list(used_indices & available_indices))
+        if not valid_indices and index_map:
+            answer = re.sub(r"([.!?])(\s|$)", r" [1]\1\2", answer, count=1)
+            valid_indices = [1]
+        sources_section = build_sources_section(valid_indices, index_map)
 
-    valid_indices = sorted(list(used_indices & available_indices))
-
-    # 6) Fallback: wenn inhaltlich Kontext da ist, aber keine Zitate gesetzt wurden
-    if not valid_indices and index_map and answer.strip().lower() != "not in context.":
-        answer = re.sub(r"([.!?])(\s|$)", r" [1]\1\2", answer, count=1)
-        valid_indices = [1]
-
-    # 7) Sources used exakt aus valid_indices
-    sources_section = build_sources_section(valid_indices, index_map)
-
-    # 8) Debug-Extras (Top-K als Aufzählung + Full Context inkl. SCORE)
+    # Debug (and ONLY show Top-K section when debugging)
     debug_sections = ""
     if debug:
         topk_section = build_topk_section(topk_list)
-        # History-Dump
-        hist_lines = []
-        if history_used:
-            for h in history_used:
-                role = "User" if h["role"] == "user" else "Assistant"
-                # hart kürzen, damit UI nicht explodiert
-                content = h["content"].strip()
-                if len(content) > 500:
-                    content = content[:500] + "…"
-                hist_lines.append(f"{role}: {content}")
-        history_dump = "\n".join(hist_lines) if hist_lines else "(none)"
-
+        carry_info = f"Carryover docs used: {len(carry_docs) if follow_up_on else 0} / {carry_k if follow_up_on else 0}"
+        hist_info  = f"History turns shown: {hist_turns if follow_up_on else 0}"
+        meta_dump = f"— Meta —\n{carry_info}\n{hist_info}\n"
+        rew_dump  = f"— Original question —\n{original_q}\n\n— Spell-fixed —\n{question}\n"
         full_context_dump = f"— Full Context (as given to LLM) —\n{context_text}"
-        rewrite_dump = (
-            "— Follow-up rewrite applied: YES —\n"
-            f"— Original question —\n{original_q}\n\n"
-            f"— Effective question —\n{effective_q}\n\n"
-            f"— History used (window=3) —\n{history_dump}"
-            if follow_up else
-            "— Follow-up rewrite applied: NO —"
-        )
-        debug_sections = "\n\n" + (topk_section + "\n\n" if topk_section else "") + rewrite_dump + "\n\n" + full_context_dump
+        debug_sections = "\n\n" + (topk_section + "\n\n" if topk_section else "") + meta_dump + rew_dump + "\n" + full_context_dump
 
-    # 9) Finale Antwort zusammenbauen
-    final_text = f"{answer}\n\n{sources_section}{debug_sections}"
+    st.session_state["last_docs"] = show_docs if follow_up_on else []
+
+    if is_no_context:
+        final_text = f"{answer}{debug_sections}"
+    else:
+        final_text = f"{answer}\n\n{sources_section}{debug_sections}"
 
     return final_text, index_map
 
 # =========================
-# Chat-Verlauf & UI
+# Chat UI
 # =========================
 if "messages" not in st.session_state:
     st.session_state.messages = []
+if "last_docs" not in st.session_state:
+    st.session_state.last_docs = []
 
 for m in st.session_state.messages:
     role = "user" if m["role"] == "user" else "assistant"
     with st.chat_message(role):
         st.write(m["content"])
 
-user_q = st.chat_input("Frage zu deinen Daten …")
+user_q = st.chat_input("Ask about your data …")
 if user_q:
     st.session_state.messages.append({"role": "user", "content": user_q})
     with st.chat_message("user"):
@@ -356,9 +354,17 @@ if user_q:
     with st.chat_message("assistant"):
         with st.spinner("Retrieving & generating …"):
             try:
-                ans, _ = answer_with_sources(user_q, k, debug_mode, follow_up_active)
+                ans, _ = answer_with_sources(
+                    question=user_q,
+                    top_k=k,
+                    debug=debug_mode,
+                    follow_up_on=follow_up_active,
+                    carry_k=carry_docs_k,
+                    hist_turns=history_turns
+                )
             except Exception as e:
-                st.error(f"Fehler: {e}")
+                st.error(f"Error: {e}")
                 st.stop()
             st.write(ans)
+
     st.session_state.messages.append({"role": "assistant", "content": ans})
