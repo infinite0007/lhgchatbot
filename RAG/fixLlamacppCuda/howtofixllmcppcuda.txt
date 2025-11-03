@@ -1,0 +1,13 @@
+To Fix it read and just redo this thread. I did it without .venv: https://github.com/Granddyser/windows-llama-cpp-python-cuda-guide or mine forked: https://github.com/infinite0007/windows-llama-cpp-python-cuda-guide
+follow the steps until Visual Studio with C++ Developeroptions installed and Cuda installed:
+
+Important step is to uninstall the current VERSION of llama-cpp-python
+pip uninstall llama-cpp-python
+
+then open Powershell as Administrator and run step by step:
+$env:FORCE_CMAKE="1"
+$env:CMAKE_ARGS="-DGGML_CUDA=on"
+$env:CUDA_CXX="C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.1\bin\nvcc.exe"
+pip install llama-cpp-python[server] --upgrade --force-reinstall --no-cache-dir
+
+after the running is done it works like a charm.
