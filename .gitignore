@@ -66,6 +66,7 @@ falcon_env
 data/
 chroma_db/
 cag_cache/
+cag_mem/
 finetune/
 finetunedmodels/
 llama.cpp/
