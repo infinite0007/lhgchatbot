@@ -10,6 +10,7 @@ import numpy as np
 import streamlit as st
 from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
 from langchain_community.llms import HuggingFacePipeline
+from langchain_community.llms import HuggingFacePipeline, LlamaCpp
 from sentence_transformers import SentenceTransformer
 
 # Optional FAISS (für sehr große Caches und/oder GPU Acceleration)
@@ -39,18 +40,25 @@ MAX_TOKENS    = 450
 SNIPPET_CHARS = 900 # max. Zeichen pro Treffer im Prompt
 USE_FAISS     = True # wenn verfügbar, nutze FAISS (CPU/GPU). Fallback: NumPy / Torch
 
+# ---- Quantifizierte Einstellungen GGUF ----
+USE_GGUF        = False # True = ungenauer und Antwortqualität leidet under GGUF
+GGUF_MODEL_PATH = "../gemma-3-4b-Instruct/GGUF/gemma3-4b-instruct.gguf"  # Quantifiziertes Modell
+N_CTX           = 8192   # je nach Bedarf/VRAM
+N_GPU_LAYERS    = -1     # -1 = max. Offload auf CUDA (GPU) wenn man es anpasst, verteilt es sich dann perfekt auf CPU/GPU auf
+N_THREADS       = os.cpu_count() or 8
+
 SYSTEM_PROMPT = (
     "You are a precise assistant for enterprise knowledge.\n"
     "Follow these steps strictly and in order:\n"
     "1. Before searching, check the question for spelling or typing errors and silently correct them.\n"
-    "2. Answer ONLY using the provided context.\n"
+    "2. Search only within the provided context to find an answer.\n"
     "3. If no relevant information can be found, reply only with: 'Not in context.' and do not cite any sources.\n"
     "4. If the question can be partially answered, provide only the part that is supported by the context.\n"
     "5. Keep answers concise and factual.\n"
-    "6. Add cites into the text but only if it's available in the provided context. Use [1], [2], ... markers.\n"
-    "7. Do NOT invent sources or add information not in the context.\n"
-    "8. Do NOT ask follow-up questions. Stop after giving the answer and sources.\n"
-    "This is important — follow the steps exactly and do not hallucinate."
+    "6. Add source citations as [1], [2], etc. into the text (if supported by the context).\n"
+    "7. Do NOT write any 'Sources used:' or similar headings like 'Sources used: [1]'. Citations must only appear inline like [1], [2], etc.\n"
+    "8. Do NOT invent sources or add information not in the context.\n"
+    "9. Do NOT ask follow-up questions. Stop after giving the answer and sources."
 )
 
 # =========================
@@ -64,7 +72,11 @@ with st.sidebar:
     st.subheader("Settings")
     st.text_input("Cache path", value=CACHE_DIR, disabled=True)
     st.text_input("Embeddings", value=EMBEDDING_MODEL, disabled=True)
-    st.text_input("HF model", value=HF_MODEL_PATH, disabled=True)
+    # Modellanzeige dynamisch je nach Modus
+    model_name_display = (
+        os.path.basename(GGUF_MODEL_PATH) if USE_GGUF else os.path.basename(HF_MODEL_PATH)
+    )
+    st.text_input("Model", value=model_name_display, disabled=True)
 
     k          = st.slider("Top-K", 1, 20, TOP_K, 1)
     temp       = st.slider("Temperature", 0.0, 1.5, TEMPERATURE, 0.05)
@@ -130,24 +142,37 @@ query_encoder = load_query_encoder(EMBEDDING_MODEL)
 # LLM
 # =========================
 @st.cache_resource(show_spinner=True)
-def load_llm(model_path: str, max_new_tokens: int, temperature: float) -> HuggingFacePipeline:
-    tok = AutoTokenizer.from_pretrained(model_path, use_fast=True, local_files_only=True)
-    mdl = AutoModelForCausalLM.from_pretrained(
-        model_path, device_map="auto", torch_dtype="auto", local_files_only=True
-    )
-    gen = pipeline(
-        "text-generation",
-        model=mdl,
-        tokenizer=tok,
-        max_new_tokens=max_new_tokens,
-        temperature=temperature,
-        do_sample=bool(temperature > 0.0),
-        return_full_text=True,
-        pad_token_id=tok.eos_token_id if tok.eos_token_id is not None else None,
-    )
-    return HuggingFacePipeline(pipeline=gen)
+def load_llm(use_gguf: bool, hf_model_path: str, gguf_model_path: str,
+             max_new_tokens: int, temperature: float):
+    if not use_gguf:
+        tok = AutoTokenizer.from_pretrained(hf_model_path, use_fast=True, local_files_only=True)
+        mdl = AutoModelForCausalLM.from_pretrained(
+            hf_model_path, device_map="auto", torch_dtype="auto", local_files_only=True
+        )
+        gen = pipeline(
+            "text-generation",
+            model=mdl,
+            tokenizer=tok,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            do_sample=bool(temperature > 0.0),
+            return_full_text=True,
+            pad_token_id=tok.eos_token_id if tok.eos_token_id is not None else None,
+        )
+        return HuggingFacePipeline(pipeline=gen)
 
-llm = load_llm(HF_MODEL_PATH, max_tokens, temp)
+    # GGUF-Pfad wählen -> LlamaCpp (CUDA-Offload via n_gpu_layers)
+    llm = LlamaCpp(
+        model_path=gguf_model_path,
+        n_ctx=N_CTX, # In llama.cpp muss Prompt-Tokens + max_tokens ≤ n_ctx sein, sonst ERROR also abgelehnt wenn: prompt_tokens + max_tokens > n_ctx
+        verbose=True,
+        use_mlock=True,
+        n_gpu_layers=N_GPU_LAYERS,
+        n_threads=N_THREADS
+    )
+    return llm
+
+llm = load_llm(USE_GGUF, HF_MODEL_PATH, GGUF_MODEL_PATH, MAX_TOKENS, TEMPERATURE)
 
 # =========================
 # Retrieval backends
@@ -200,6 +225,11 @@ st.caption(f"Similarity backend: **{BACKEND}** • Metric: **cosine** • Top-K:
 # Helpers (citations & formatting)
 # =========================
 RE_CITATIONS = re.compile(r"\[(\d+)\]")
+SOURCES_RE = re.compile(r"(Sources\s+(used:|:))(.|\s)*?$", re.IGNORECASE)
+
+def strip_llm_sources_block(text: str) -> str:
+    """Schneidet vom LLM generierte 'Sources used:'-Abschnitte am Ende weg."""
+    return re.sub(SOURCES_RE, "", text).rstrip()
 
 def canonicalize_url(u: str) -> str:
     if not u: return u
@@ -272,8 +302,21 @@ def _fix_spelling_only_llm(text: str) -> str:
             "If there are no mistakes, return it exactly as-is.\n\n"
             f"Text: {text}\n\nCorrected:"
         )
-        resp = llm.pipeline(prompt, max_new_tokens=64, temperature=0.0, do_sample=False, return_full_text=False)
-        out = str(resp[0]["generated_text"]).strip()
+
+        if hasattr(llm, "pipeline"):
+            # HuggingFace pipeline
+            resp = llm.pipeline(
+                prompt,
+                max_new_tokens=64,
+                temperature=0.0,
+                do_sample=False,
+                return_full_text=False
+            )
+            out = str(resp[0]["generated_text"]).strip()
+        else:
+            # GGUF (LlamaCpp)
+            out = str(llm.invoke(prompt)).strip()
+
         if len(out) == 0 or out.lower() in {"n/a", "none"}:
             return text
         return out
@@ -324,7 +367,7 @@ def answer_with_sources(
             while i >= 1 and collected < turns:
                 if messages[i].get("role") == "assistant" and messages[i-1].get("role") == "user":
                     u = messages[i-1].get("content", "").strip()
-                    a = messages[i].get("content", "").strip()
+                    a = strip_llm_sources_block(messages[i].get("content", "").strip())
                     hist.append(f"User: {u}\nAssistant: {a}")
                     collected += 1
                     i -= 2
