@@ -379,6 +379,7 @@ def dump_pages(space_keys: List[str], since: Optional[str], out_path: str, with_
 # ---------------- CLI ----------------
 
 def main():
+    start_time = time.time()
     ap = argparse.ArgumentParser(description="Confluence kanonischer Extractor")
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--space", action="append", help="Space-Key; mehrfach möglich (--space A --space B)")
@@ -401,6 +402,11 @@ def main():
         space_keys = args.space
 
     dump_pages(space_keys, args.since, args.out, with_attachments=args.with_attachments)
+
+    end_time = time.time()
+    elapsed = end_time - start_time
+    log(f"Gesamtdauer: {elapsed:.2f} Sekunden ({elapsed/60:.2f} Minuten)")
+
 
 if __name__ == "__main__":
     main()
