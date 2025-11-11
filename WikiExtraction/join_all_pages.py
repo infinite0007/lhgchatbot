@@ -3,6 +3,9 @@
 """
 join_all_pages.py
 -----------------
+Example:
+python .\join_all_pages.py --pages .\data\raw\confluence.jsonl --ocr-images .\data\derivatives\ocr.jsonl --drawio .\data\derivatives\drawio_text.jsonl --pdf-docling .\data\derivatives\pdf_docling_prepared.jsonl --pdf-fig-ocr .\data\derivatives\prepared_figures_ocr.jsonl --out .\data\derivatives\joined_pages_full.jsonl
+
 Mergt alle Attachment-Signale (Image-OCR, Drawio, PDF-Text, PDF-Figure-OCR, PDF-Tabellen)
 zur Seite zurück. Schreibt pro Seite genau *einen* Record und erzeugt:
   - attachments_index: strukturierter Index der Anhänge/Signale
@@ -14,7 +17,7 @@ zur Seite zurück. Schreibt pro Seite genau *einen* Record und erzeugt:
 """
 
 from __future__ import annotations
-import os, json, argparse, csv, re
+import os, json, argparse, csv, re, time
 from collections import defaultdict
 from typing import Dict, Any, Iterable, List, Optional
 
@@ -111,6 +114,7 @@ def csv_to_markdown_preview(csv_path: str,
 # --------------------- Main ---------------------
 
 def main():
+    start_time = time.time()
     ap = argparse.ArgumentParser(description="Join Seiten + Attachments (OCR/Drawio/PDF/Figures/Tables).")
     ap.add_argument("--pages", required=True, help="confluence.jsonl (Seiten)")
     ap.add_argument("--ocr-images", default=None, help="ocr.jsonl (Image-OCR)")
@@ -286,6 +290,9 @@ def main():
 
             fout.write(json.dumps(p, ensure_ascii=False) + "\n")
 
+    end_time = time.time()
+    elapsed = end_time - start_time
+    print(f"Gesamtdauer: {elapsed:.2f} Sekunden ({elapsed/60:.2f} Minuten)")
     print(f"[join] Fertig. Output: {args.out}")
 
 if __name__ == "__main__":

@@ -89,6 +89,7 @@ def find_pdfs(attachments_dir: str) -> List[Path]:
     return list(root.rglob("*.pdf"))
 
 def main():
+    start_time = time.time()
     ap = argparse.ArgumentParser(description="Phase A: Docling-Prepare (Text/MD + Figures + Tables).")
     ap.add_argument("--attachments-dir", default="data/raw/attachments")
     ap.add_argument("--canonical-json", default=None)
@@ -261,7 +262,11 @@ def main():
             except Exception as e:
                 log(f"WARN: Verarbeitung fehlgeschlagen für {npath}: {e}")
 
+    end_time = time.time()
+    elapsed = end_time - start_time
+    log(f"Gesamtdauer: {elapsed:.2f} Sekunden ({elapsed/60:.2f} Minuten)")
     log(f"Fertig. PDFs: {len(pdfs)} | erfolgreich verarbeitet: {done} | Output: {out_path}")
+    
 
 if __name__ == "__main__":
     main()

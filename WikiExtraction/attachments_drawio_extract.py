@@ -16,7 +16,6 @@ python .\attachments_drawio_extract.py `
   --canonical-json data/raw/confluence.jsonl `
   --out data/derivatives/drawio_text.jsonl
 
-  
 # Mit Cache (überspringt bereits verarbeitete Dateien)
 python .\attachments_drawio_extract.py `
   --attachments-dir data/raw/attachments `
@@ -26,7 +25,7 @@ python .\attachments_drawio_extract.py `
 """
 
 from __future__ import annotations
-import os, sys, json, time, argparse, base64, zlib, xml.etree.ElementTree as ET
+import os, sys, json, time, argparse, base64, zlib, xml.etree.ElementTree as ET, mimetypes
 from typing import Dict, Any, List, Optional
 from html import unescape
 
@@ -60,7 +59,7 @@ def load_canonical_map(canonical_path: Optional[str]) -> Dict[str, Dict[str, Any
                     continue
                 key = os.path.normpath(lp)
                 by_local[key] = {
-                    "page_id": page_id,
+                    "page_id": str(page_id) if page_id is not None else None,
                     "page_title": page_title,
                     "page_url": page_url,
                     "attachment_id": a.get("id"),
@@ -69,6 +68,28 @@ def load_canonical_map(canonical_path: Optional[str]) -> Dict[str, Dict[str, Any
                     "fileSize": a.get("fileSize"),
                 }
     return by_local
+
+def load_page_meta_by_id(canonical_path: Optional[str]) -> Dict[str, Dict[str, Any]]:
+    """Fallback: Mappe page_id -> (title,url), falls Attachments im Canonical fehlen."""
+    meta: Dict[str, Dict[str, Any]] = {}
+    if not canonical_path or not os.path.exists(canonical_path):
+        return meta
+    with open(canonical_path, "r", encoding="utf-8") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except Exception:
+                continue
+            pid = row.get("id")
+            if pid is None:
+                continue
+            meta[str(pid)] = {
+                "page_title": row.get("title"),
+                "page_url": row.get("url"),
+            }
+    return meta
 
 def _looks_like_drawio(path: str) -> bool:
     try:
@@ -104,7 +125,6 @@ def extract_text_from_mxgraph(xml_text: str) -> str:
         return ""
     texts: List[str] = []
     for cell in root.iter():
-        # Namespaces ignoren: nur auf Suffix prüfen
         if cell.tag.endswith("mxCell"):
             val = cell.attrib.get("value")
             if val:
@@ -145,11 +165,8 @@ def parse_drawio(path: str) -> str:
 
     all_texts: List[str] = []
 
-    # Finde alle <diagram>-Knoten (ohne Namespaces)
     diagrams = [el for el in root.iter() if el.tag.endswith("diagram")]
     if not diagrams:
-        # Manche .xml haben direkt ein mxGraphModel ohne <mxfile>/<diagram>
-        # => versuche direkt zu extrahieren
         txt = extract_text_from_mxgraph(data)
         return txt
 
@@ -160,13 +177,10 @@ def parse_drawio(path: str) -> str:
             txtnode = diag.text or ""
             xml_inner = _decompress_base64_both(txtnode) or ""
         else:
-            # Uncompressed: Inhalt liegt als Kindelement (z. B. <mxGraphModel/>) vor
             if len(diag):
-                # kombiniere alle direkten Kinder
                 parts = [ET.tostring(child, encoding="unicode") for child in list(diag)]
                 xml_inner = "\n".join(parts)
             else:
-                # manchmal liegt das XML (HTML-escaped) direkt im Text
                 xml_inner = diag.text or ""
 
         if not xml_inner:
@@ -178,7 +192,20 @@ def parse_drawio(path: str) -> str:
 
     return "\n".join(all_texts).strip()
 
+def infer_page_id_from_path(file_path: str, attachments_dir: str) -> Optional[str]:
+    """Fallback: Ziehe page_id aus dem ersten Verzeichnis unterhalb von attachments_dir."""
+    try:
+        rel = os.path.relpath(file_path, attachments_dir)
+    except Exception:
+        return None
+    parts = rel.split(os.sep)
+    if not parts:
+        return None
+    candidate = parts[0]
+    return candidate if candidate.isdigit() else None
+
 def main():
+    start_time = time.time()
     ap = argparse.ArgumentParser(description="Draw.io (.drawio/.xml) Text-Extraktion.")
     ap.add_argument("--attachments-dir", default="data/raw/attachments")
     ap.add_argument("--canonical-json", default=None)
@@ -188,6 +215,7 @@ def main():
 
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     meta_by_local = load_canonical_map(args.canonical_json)
+    page_meta_by_id = load_page_meta_by_id(args.canonical_json)
 
     existing: set[str] = set()
     if args.skip_existing and os.path.exists(args.out):
@@ -213,17 +241,36 @@ def main():
                 if not text:
                     empty += 1
                     continue
+
                 rec = {
                     "local_path": npath,
                     "drawio_text": text,
                     "extracted_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 }
+                # Anreicherung: erst per local_path, dann Fallback per Pfad
                 rec.update(meta_by_local.get(npath, {}))
+
+                if not rec.get("page_id"):
+                    pid = infer_page_id_from_path(npath, args.attachments_dir)
+                    if pid:
+                        rec["page_id"] = pid
+                        if pid in page_meta_by_id:
+                            rec.setdefault("page_title", page_meta_by_id[pid].get("page_title"))
+                            rec.setdefault("page_url",   page_meta_by_id[pid].get("page_url"))
+
+                # Best-Effort-Felder
+                rec.setdefault("title", os.path.basename(npath))
+                mt, _ = mimetypes.guess_type(npath)
+                if mt and not rec.get("mediaType"):
+                    rec["mediaType"] = mt
+
                 fout.write(json.dumps(rec, ensure_ascii=False) + "\n")
                 done += 1
             except Exception as e:
                 log(f"WARN: Draw.io-Parsing fehlgeschlagen für {npath}: {e}")
-
+    end_time = time.time()
+    elapsed = end_time - start_time
+    log(f"Gesamtdauer: {elapsed:.2f} Sekunden ({elapsed/60:.2f} Minuten)")
     log(f"Fertig. Draw.io-Dateien gefunden: {len(files)} | mit Text extrahiert: {done} | leer/ohne Text: {empty} | Output: {args.out}")
 
 if __name__ == "__main__":

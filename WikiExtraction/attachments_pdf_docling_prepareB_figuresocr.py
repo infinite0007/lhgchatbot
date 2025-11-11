@@ -14,7 +14,7 @@ Eigenschaften:
 - Robust gegen fehlende/gelöschte Figure-Dateien
 
 Beispiel:
-  python attachments_pdf_docling_prepareB_figuresocr.py --prepared-jsonl data/derivatives/pdf_docling_prepared.jsonl --out data/derivatives/prepared_figures_ocr.jsonl --langs de en --with-boxes --min-conf 0.25 --skip-existing --gpu
+  python attachments_pdf_docling_prepareB_figuresocr.py --prepared-jsonl data/derivatives/pdf_docling_prepared.jsonl --out data/derivatives/prepared_figures_ocr.jsonl --langs de en --min-conf 0.25 --skip-existing --gpu
 
   python attachments_pdf_docling_prepareB_figuresocr.py \
     --prepared-jsonl data/derivatives/pdf_docling_prepared.jsonl \
@@ -130,6 +130,7 @@ def do_easyocr_text(reader: "easyocr.Reader", img_path: str, with_boxes: bool,
 # --------------------- Main ---------------------
 
 def main():
+    start_time = time.time()
     ap = argparse.ArgumentParser(description="Figure-OCR (EasyOCR) für Docling-Prepared-Ausgabe (Teil B).")
     ap.add_argument("--prepared-jsonl", required=True,
                     help="JSONL aus Teil A (pdf_docling_prepared.jsonl)")
@@ -230,6 +231,9 @@ def main():
 
             processed_pdf += 1  # dieses PDF ist komplett
 
+    end_time = time.time()
+    elapsed = end_time - start_time
+    log(f"Gesamtdauer: {elapsed:.2f} Sekunden ({elapsed/60:.2f} Minuten)")
     log(f"Fertig. PDFs mit Figures: {processed_pdf} | Figures OCR: {processed_figs} | Fehlende Figures: {skipped_missing} | Output: {args.out}")
 
 

@@ -6,7 +6,7 @@ und führt OCR mit EasyOCR auf Bilddateien aus. Ergebnisse werden als JSONL
 geschrieben (1 Zeile = 1 Attachment-OCR-Result).
 
 Beispiel:
-  python attachments_ocr.py --attachments-dir data/raw/attachments --canonical-json data/raw/confluence.jsonl --out data/derivatives/ocr.jsonl --langs de en --gpu --with-boxes
+  python attachments_ocr.py --attachments-dir data/raw/attachments --canonical-json data/raw/confluence.jsonl --out data/derivatives/ocr.jsonl --langs de en --gpu
 
   python attachments_ocr.py \
     --attachments-dir data/raw/attachments \
@@ -20,9 +20,10 @@ PDF/DRAWIO werden geloggt, aber ausgelassen (dafür gibt es eigene Skripte).
 
 EasyOCR: https://github.com/JaidedAI/EasyOCR
 
-Neu (nur Statistik, keine Logikänderung der Outputs):
+- Fallback-Ermittlung der page_id aus dem Pfad unterhalb von --attachments-dir.
+- Auch bei --with-boxes wird zusätzlich ein zusammengefasster ocr_text gespeichert.
 - Am Laufzeitende werden Konfidenz-Metriken ausgegeben (mean, median, p10/p90),
-  sofern --with-boxes verwendet wurde. Ohne --with-boxes kein Confidence-Report.
+  sofern --with-boxes verwendet wurde.
 """
 
 from __future__ import annotations
@@ -31,6 +32,7 @@ import sys
 import json
 import time
 import argparse
+import mimetypes
 from typing import Dict, Any, List, Optional
 
 # --------------------- EasyOCR ---------------------
@@ -48,39 +50,28 @@ def log(msg: str) -> None:
     print(f"[ocr] {msg}")
 
 def _to_int(x) -> int:
-    """Sicher zu Python-int casten (gegen numpy.int32/64 etc.)."""
     try:
         return int(x)
     except Exception:
         return int(float(x))
 
 def _to_float(x) -> float:
-    """Sicher zu Python-float casten (gegen numpy.float32/64 etc.)."""
     try:
         return float(x)
     except Exception:
         return float(str(x))
 
 def _normalize_bbox(bbox) -> List[List[int]]:
-    """
-    EasyOCR bbox ist i.d.R. Liste/Tuple von 4 Punkten:
-    [(x1,y1),(x2,y2),(x3,y3),(x4,y4)] – wir casten alles auf eingebaute int.
-    """
     norm: List[List[int]] = []
     try:
         for p in bbox:
             x, y = p[0], p[1]
             norm.append([_to_int(x), _to_int(y)])
     except Exception:
-        # Fallback: leere Box, falls Format unerwartet
         norm = []
     return norm
 
 def load_canonical_map(canonical_path: Optional[str]) -> Dict[str, Dict[str, Any]]:
-    """
-    Baut ein Lookup 'local_path' -> Attachment-Metadaten
-    (inkl. page_id, page_title, page_url, attachment_id, title, mediaType, fileSize).
-    """
     by_local: Dict[str, Dict[str, Any]] = {}
     if not canonical_path or not os.path.exists(canonical_path):
         return by_local
@@ -106,7 +97,7 @@ def load_canonical_map(canonical_path: Optional[str]) -> Dict[str, Dict[str, Any
                     continue
                 key = os.path.normpath(lp)
                 by_local[key] = {
-                    "page_id": page_id,
+                    "page_id": str(page_id) if page_id is not None else None,
                     "page_title": page_title,
                     "page_url": page_url,
                     "attachment_id": a.get("id"),
@@ -116,6 +107,27 @@ def load_canonical_map(canonical_path: Optional[str]) -> Dict[str, Dict[str, Any
                 }
     return by_local
 
+def load_page_meta_by_id(canonical_path: Optional[str]) -> Dict[str, Dict[str, Any]]:
+    meta: Dict[str, Dict[str, Any]] = {}
+    if not canonical_path or not os.path.exists(canonical_path):
+        return meta
+    with open(canonical_path, "r", encoding="utf-8") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except Exception:
+                continue
+            pid = row.get("id")
+            if pid is None:
+                continue
+            meta[str(pid)] = {
+                "page_title": row.get("title"),
+                "page_url": row.get("url"),
+            }
+    return meta
+
 def find_attachments(attachments_dir: str) -> List[str]:
     paths: List[str] = []
     for root, _, files in os.walk(attachments_dir):
@@ -123,14 +135,24 @@ def find_attachments(attachments_dir: str) -> List[str]:
             paths.append(os.path.join(root, fn))
     return paths
 
+def infer_page_id_from_path(file_path: str, attachments_dir: str) -> Optional[str]:
+    try:
+        rel = os.path.relpath(file_path, attachments_dir)
+    except Exception:
+        return None
+    parts = rel.split(os.sep)
+    if not parts:
+        return None
+    candidate = parts[0]
+    return candidate if candidate.isdigit() else None
+
 def do_easy_ocr(reader: "easyocr.Reader", path: str, with_boxes: bool):
     """
     with_boxes=False  -> gibt reinen Text (string) zurück
     with_boxes=True   -> gibt {"items":[{"bbox":[[x,y]..], "text":str, "confidence":float}, ...]} zurück
-    (Unverändert gegenüber deinem bisherigen Verhalten.)
     """
     if with_boxes:
-        triples = reader.readtext(path, detail=1)  # [ [ (x,y)*4 ], text, conf ] je Treffer
+        triples = reader.readtext(path, detail=1)
         items = []
         for triple in triples:
             if not isinstance(triple, (list, tuple)) or len(triple) < 3:
@@ -143,11 +165,10 @@ def do_easy_ocr(reader: "easyocr.Reader", path: str, with_boxes: bool):
             })
         return {"items": items}
     else:
-        texts = reader.readtext(path, detail=0)  # Liste von Strings
+        texts = reader.readtext(path, detail=0)
         return " ".join([str(t).strip() for t in texts if isinstance(t, str)]).strip()
 
 def percentiles(values: List[float], ps: List[float]) -> List[float]:
-    """Einfache Perzentile (ps in [0..100]); robust bei leeren Listen."""
     if not values:
         return [0.0 for _ in ps]
     v = sorted(values)
@@ -185,6 +206,7 @@ def main():
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
 
     meta_by_local = load_canonical_map(args.canonical_json)
+    page_meta_by_id = load_page_meta_by_id(args.canonical_json)
     log(f"Metadaten geladen für {len(meta_by_local)} Attachments (aus canonical).")
 
     existing: set[str] = set()
@@ -199,17 +221,14 @@ def main():
                     continue
         log(f"Cache aktiv: {len(existing)} OCR-Einträge vorhanden (werden übersprungen).")
 
-    # EasyOCR Reader
     reader = easyocr.Reader(args.langs, gpu=bool(args.gpu))
 
-    # ---- Laufzeit-Statistiken (neu) ----
-    count_total_files         = 0   # alle gescannten Dateien (inkl. Nicht-Bilder)
-    count_images              = 0   # Bilddateien
-    count_ocr_images          = 0   # Bilder, auf denen OCR tatsächlich lief
-    count_images_with_text    = 0   # Bilder mit erkanntem Text (egal welche Confidence)
+    count_total_files         = 0
+    count_images              = 0
+    count_ocr_images          = 0
+    count_images_with_text    = 0
     count_errors              = 0
 
-    # Konfidenzen (nur verfügbar bei --with-boxes)
     conf_all_items: List[float] = []
 
     with open(args.out, "a", encoding="utf-8") as out:
@@ -239,25 +258,39 @@ def main():
                     "extracted_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                     "langs": args.langs,
                 }
-                # Seite/Attachment-Metadaten anreichern (Link für spätere Navigation)
+                # Canonical-Metadaten (per local_path)
                 rec.update(meta_by_local.get(npath, {}))
 
+                # Fallback: page_id aus Pfad + Seiten-Meta
+                if not rec.get("page_id"):
+                    pid = infer_page_id_from_path(npath, args.attachments_dir)
+                    if pid:
+                        rec["page_id"] = pid
+                        if pid in page_meta_by_id:
+                            rec.setdefault("page_title", page_meta_by_id[pid].get("page_title"))
+                            rec.setdefault("page_url",   page_meta_by_id[pid].get("page_url"))
+
+                # Best-Effort-Felder
+                rec.setdefault("title", os.path.basename(npath))
+                mt, _ = mimetypes.guess_type(npath)
+                if mt and not rec.get("mediaType"):
+                    rec["mediaType"] = mt
+
                 if args.with_boxes:
-                    # {"items":[{bbox:[...], text:"", confidence:0.0}, ...]}
                     items = ocr_result.get("items", []) if isinstance(ocr_result, dict) else []
                     rec["ocr_boxes"] = items
-                    # Text für "hat Text?"-Statistik extrahieren
-                    has_text = any((it.get("text") or "").strip() for it in items)
-                    if has_text:
+                    # immer auch ocr_text mitschreiben (zusammengefasst), damit join_all_pages es anhängen kann
+                    concat_text = " ".join([(it.get("text") or "").strip() for it in items if isinstance(it, dict)]).strip()
+                    rec["ocr_text"] = concat_text
+
+                    if concat_text:
                         count_images_with_text += 1
-                    # Konfidenzen sammeln
                     for it in items:
                         try:
                             conf_all_items.append(_to_float(it.get("confidence", 0.0)))
                         except Exception:
                             pass
                 else:
-                    # Plain-Text Pfad (detail=0)
                     text = ocr_result if isinstance(ocr_result, str) else ""
                     rec["ocr_text"] = text
                     if text.strip():
@@ -271,7 +304,6 @@ def main():
 
     log(f"Fertig. Dateien gesamt gescannt: {count_total_files}, OCR auf Bildern: {count_ocr_images}, Output: {args.out}")
 
-    # --------- Konsolenreport (nur Statistik, keine Änderung der Outputs) ----------
     elapsed = time.time() - start_time
     print("\n=== Zusammenfassung (OCR Attachments) ===")
     print(f"Bild-Attachments gefunden     : {count_images}")
