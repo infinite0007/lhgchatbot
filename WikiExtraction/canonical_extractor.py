@@ -27,6 +27,7 @@ import base64
 import argparse
 import mimetypes
 from typing import Dict, Any, Iterable, List, Optional, Tuple
+from statistics import median
 
 import requests
 from bs4 import BeautifulSoup
@@ -77,6 +78,15 @@ def _ext_from_headers(headers: Dict[str, str]) -> Tuple[Optional[str], Optional[
         if "." in os.path.basename(filename):
             ext = os.path.splitext(filename)[1] or ext
     return ext, filename
+
+def _wc(s: Optional[str]) -> int:
+    return len((s or "").split())
+
+def _fmt_int(n: int) -> str:
+    return f"{n:,}".replace(",", ".")
+
+def _approx(n: int) -> str:
+    return f"$\\sim${_fmt_int(n)}"
 
 # ---------------- HTTP Wrapper ----------------
 
@@ -309,7 +319,7 @@ def storage_to_text(storage_html: str) -> str:
 
 # ---------------- Dump ----------------
 
-def dump_pages(space_keys: List[str], since: Optional[str], out_path: str, with_attachments: bool = False) -> None:
+def dump_pages(space_keys: List[str], since: Optional[str], out_path: str, with_attachments: bool = False) -> Dict[str, Any]:
     base = env_or_die("ATLASSIAN_BASE")
     bearer = os.getenv("ATLASSIAN_BEARER", "").strip() or None
     email = os.getenv("ATLASSIAN_EMAIL", "").strip() or None
@@ -318,7 +328,16 @@ def dump_pages(space_keys: List[str], since: Optional[str], out_path: str, with_
     http = Http(base, bearer, email, token)
     cx = ConfluenceExtractor(http)
 
+    # ---- Metriken ----
     total_pages = 0
+    word_counts: List[int] = []
+    total_words_text_plain = 0
+
+    att_declared_total = 0
+    att_attempted = 0
+    att_download_ok = 0
+    att_download_err = 0
+
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     attachment_dir = "data/raw/attachments" if with_attachments else None
 
@@ -348,6 +367,23 @@ def dump_pages(space_keys: List[str], since: Optional[str], out_path: str, with_
 
                 text_plain = storage_to_text(body_storage)
 
+                # ---- Metriken: text_plain ----
+                wc = _wc(text_plain)
+                word_counts.append(wc)
+                total_words_text_plain += wc
+                total_pages += 1
+
+                # ---- Metriken: Attachments ----
+                att_declared_total += len(attachments)
+                if with_attachments:
+                    for a in attachments:
+                        if a.get("download"):
+                            att_attempted += 1
+                            if a.get("local_path"):
+                                att_download_ok += 1
+                            else:
+                                att_download_err += 1
+
                 row = {
                     "source": "confluence",
                     "id": p.get("id"),
@@ -372,9 +408,22 @@ def dump_pages(space_keys: List[str], since: Optional[str], out_path: str, with_
                     "extracted_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 }
                 out.write(json.dumps(row, ensure_ascii=False) + "\n")
-                total_pages += 1
 
-    log(f"Fertig. Seiten exportiert: {total_pages}. Datei: {out_path}")
+    median_words = int(median(word_counts)) if word_counts else 0
+    att_rate = (100.0 * att_download_ok / att_attempted) if att_attempted else None
+
+    return {
+        "pages": total_pages,
+        "median_words": median_words,
+        "total_words_text_plain": total_words_text_plain,
+        "attachments_declared": att_declared_total,
+        "attachments_attempted": att_attempted,
+        "attachments_ok": att_download_ok,
+        "attachments_err": att_download_err,
+        "attachments_rate_pct": att_rate,
+        "json_lines_written": total_pages,
+        "json_valid_pct": 100.0 if total_pages > 0 else 0.0,
+    }
 
 # ---------------- CLI ----------------
 
@@ -401,12 +450,32 @@ def main():
     else:
         space_keys = args.space
 
-    dump_pages(space_keys, args.since, args.out, with_attachments=args.with_attachments)
+    metrics = dump_pages(space_keys, args.since, args.out, with_attachments=args.with_attachments)
 
     end_time = time.time()
     elapsed = end_time - start_time
     log(f"Gesamtdauer: {elapsed:.2f} Sekunden ({elapsed/60:.2f} Minuten)")
 
+    # --------- Konsolenreport (am Ende) ----------
+    print("\n=== Zusammenfassung (Canonical Extract) ===")
+    print(f"Confluence-Seiten                 : {_fmt_int(metrics['pages'])}")
+    print(f"Ø Seitelänge                      : {_fmt_int(metrics['median_words'])} Wörter (Nur text_plain, Median)")
+    print(f"Gesamtvolumen (Text)              : {_approx(metrics['total_words_text_plain'])} Wörter (Nur text_plain)")
+    print(f"JSON-Syntaxvalidität              : {metrics['json_valid_pct']:.1f}% (alle {_fmt_int(metrics['json_lines_written'])} Zeilen)")
+    if args.with_attachments:
+        tried = metrics['attachments_attempted']
+        ok = metrics['attachments_ok']
+        err = metrics['attachments_err']
+        rate = metrics['attachments_rate_pct']
+        print(f"Attachments (gesamt, deklariert)  : {_fmt_int(metrics['attachments_declared'])}")
+        if tried:
+            print(f"Attachment-Download-Rate          : {rate:.1f}%  ({_fmt_int(ok)} ok | {_fmt_int(err)} Fehler)")
+        else:
+            print(f"Attachment-Download-Rate          : n/a (keine Downloads versucht)")
+    else:
+        print("Attachment-Download-Rate          : n/a (ohne --with-attachments)")
+    print(f"Laufzeit                           : {elapsed:.2f}s")
+    print("Hinweis: OCR-/PDF-Raten werden in den jeweiligen Schritten gemessen.")
 
 if __name__ == "__main__":
     main()
