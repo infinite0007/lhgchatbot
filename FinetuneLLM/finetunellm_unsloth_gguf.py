@@ -23,15 +23,12 @@ from transformers import (
     TrainingArguments,
 )
 
-# [UNSLOTH] Neu: Unsloth-Imports
-from unsloth import FastLanguageModel
-
 # ------------------------------
 # Konfiguration
 # ------------------------------
 BASE_MODEL = os.environ.get("BASE_MODEL", "../Falcon3-1B-Base")
-DATA_PATH = os.environ.get("DATA_PATH", "datasets/qa_dataset_nodupes.jsonl")  # unterstützt .json oder .jsonl
-OUTPUT_DIR = os.environ.get("OUTPUT_DIR", "finetunedmodels/Falcon3-1B-Base-lora-unsloth-liebherrqa-out")
+DATA_PATH = os.environ.get("DATA_PATH", "../WikiExtraction/data/derivatives/io_dataset.jsonl")  # unterstützt .json oder .jsonl
+OUTPUT_DIR = os.environ.get("OUTPUT_DIR", "finetunedmodels/Falcon3-1B-Base-lora-unsloth-liebherr-2ep-out")
 
 #DATA_PATH = os.environ.get("DATA_PATH", r"C:\Users\lhglij1\OneDrive - Liebherr\Desktop\Master\lhgchatbot\WikiExtraction\data\derivatives\qa_dataset.jsonl")
 #OUTPUT_DIR = os.environ.get("OUTPUT_DIR", "finetunedmodels/Falcon3-1B-Base-lora-unsloth-liebherrqa-out")
@@ -43,7 +40,7 @@ DROPOUT = 0.05      # Wahrscheinlichkeit, mit der man zufällig Verbindungen (Pa
 MAX_SEQ_LEN = 2048  # Maximale Länge (in Tokens) eines Eingabe- oder Prompt+Antwortkontexts, der in das Modell gegeben wird (Trunkierung, Padding etc.) / hoch = Längere Kontexte erlauben mehr Information, aber benötigen mehr Speicher & Rechenzeit / nieder = Kürzere Kontexte können Informationen abschneiden / das Modell kann weniger „sehen“ / Wenn du zu lang setzt, kann der Speicher überlaufen oder das Training extrem langsam werden
 BATCH_SIZE = 1      # Anzahl der Beispiele pro Batch, die gleichzeitig verarbeitet werden (Gradienten werden über den Batch gemittelt) / hoch = Glattere Gradienten, effizientere Nutzung der GPU / nieder = Rauschigere Gradienten, langsameres Konvergieren / Wenn zu groß, OOM (Out-of-Memory); zu klein => instabile Updates, starkes Rauschen
 GRAD_ACCUM = 8      # Gradient Accumulation Steps: du sammelst Gradienten über mehrere kleine Batches, bevor du ein Update machst — simuliert einen größeren Batch, wenn GPU nicht genug Platz bietet / hoch = Ermöglicht effektiv größeren Batch bei limitierter Hardware / nieder = Verlängert die Zeit bis zum Update (weniger Updates pro Zeiteinheit) / Wenn zu groß, kann Training ineffizient werden oder Instabilitäten auftreten
-EPOCHS = 3.0        # Anzahl der Durchläufe über das komplette Trainingsset / hoch = Mehr Lernen möglich, Modell hat mehr Gelegenheit, Muster zu extrahieren / nieder = Risiko von Overfitting, Training dauert länger / Wenn zu viele Epochen, kann das Modell zu stark memorisieren
+EPOCHS = 2.0        # Anzahl der Durchläufe über das komplette Trainingsset / hoch = Mehr Lernen möglich, Modell hat mehr Gelegenheit, Muster zu extrahieren / nieder = Risiko von Overfitting, Training dauert länger / Wenn zu viele Epochen, kann das Modell zu stark memorisieren
 LR = 2e-4           # Schrittweite, mit der Modellgewichte in Richtung des Gradienten verschoben werden / hoch = Schnellere Anpassung / schnelleres Lernen (sofern stabil) / nieder = Wenn zu hoch, kann das Training instabil werden, Loss explodieren / Wenn zu niedrig, dauert Lernen sehr lange oder bleibt im Lokalminimum stecken
 WARMUP = 0.05       # Anteil (Ratio) der Trainingsschritte, in denen die Lernrate von 0 (oder niedrigem Wert) linear auf die volle LR hochgefahren wird. Dies stabilisiert frühe Updates. / hoch = Zu kurzer Warmup: riskante große Updates zu früh / nieder = Zu langer Warmup: verschwendete Schritte mit zu kleinen Updates / Ein guter Warmup hilft, dass das Modell stabil lernt zu Beginn
 LOG_STEPS = 10      # Nach wie vielen Update-Schritten (oder Batches) protokolliert / geloggt wird / hoch = Häufigeres Logging — du siehst den Fortschritt feiner / nieder = Weniger Logging — Übersichtlicher, weniger Overhead / Wenn zu häufig geloggt wird, kann Logging Overhead das Training bremsen
