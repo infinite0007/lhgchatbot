@@ -323,6 +323,42 @@ def _fix_spelling_only_llm(text: str) -> str:
     except Exception:
         return text
 
+# --- NEW: kleine Follow-up-Umschreibung zu einer eigenständigen Query ---
+def _strip_inline_citations(text: str) -> str:
+    return re.sub(r"(?<!\d)\[(\d+)\](?!\d)", "", text)
+
+def _rewrite_followup(question: str, history_text: str) -> str:
+    """Formuliert eine Folgefrage mithilfe der History zu einer 'standalone' Query um."""
+    try:
+        prompt = (
+            "Rewrite the user's follow-up into a single, standalone question that can be searched in a knowledge base.\n"
+            "Use the conversation excerpt below as context. Keep it concise (≤ 40 words). Return ONLY the rewritten question.\n\n"
+            "Conversation excerpt:\n"
+            f"{history_text}\n\n"
+            f"Follow-up: {question}\n\n"
+            "Standalone question:"
+        )
+        if hasattr(llm, "pipeline"):
+            resp = llm.pipeline(
+                prompt,
+                max_new_tokens=64,
+                temperature=0.0,
+                do_sample=False,
+                return_full_text=False,
+            )
+            out = str(resp[0]["generated_text"]).strip()
+        else:
+            out = str(llm.invoke(prompt)).strip()
+
+        # Sicherheitsnetz: nimm nur die erste Zeile
+        out = out.splitlines()[0].strip()
+        # Minimales Fallback, falls zu kurz
+        if len(out) < 5:
+            return question
+        return out
+    except Exception:
+        return question
+
 # =========================
 # QA-Pipeline
 # =========================
@@ -343,16 +379,6 @@ def answer_with_sources(
     if spellfix_active:
         question = _fix_spelling_only_llm(question)
 
-    qv = encode_query(question)
-    scores, idxs = SEARCH(qv, top_k=max(top_k, 6))
-    # Follow-up OFF ⇒ ignore any previous context
-    if not follow_up_on:
-        # Use only fresh retrieval results
-        idxs = idxs[:top_k]
-        scores = scores[:top_k]
-
-    context_text, index_map, topk_list = format_context(idxs[:top_k], scores[:top_k])
-
     # History only if follow-up ON
     if follow_up_on:
         # build small history window for reference only (same format as RAG)
@@ -368,6 +394,7 @@ def answer_with_sources(
                 if messages[i].get("role") == "assistant" and messages[i-1].get("role") == "user":
                     u = messages[i-1].get("content", "").strip()
                     a = strip_llm_sources_block(messages[i].get("content", "").strip())
+                    a = _strip_inline_citations(a)
                     hist.append(f"User: {u}\nAssistant: {a}")
                     collected += 1
                     i -= 2
@@ -378,6 +405,23 @@ def answer_with_sources(
         hist_block = _history_snippets(st.session_state.get("messages", []), hist_turns)
     else:
         hist_block = ""
+
+    # WICHTIG: Effektive Query aus History bauen (nur für Retrieval);
+    # die sichtbare Frage im Prompt bleibt unverändert.
+    effective_query = question
+    if follow_up_on and hist_turns > 0 and hist_block:
+        effective_query = _rewrite_followup(question, hist_block)
+
+    # Retrieval mit der effektiven Query
+    qv = encode_query(effective_query)
+    scores, idxs = SEARCH(qv, top_k=max(top_k, 6))
+    # Follow-up OFF ⇒ ignore any previous context
+    if not follow_up_on:
+        # Use only fresh retrieval results
+        idxs = idxs[:top_k]
+        scores = scores[:top_k]
+
+    context_text, index_map, topk_list = format_context(idxs[:top_k], scores[:top_k])
 
     history_section = f"\n\n---\nRecent chat (for reference only):\n{hist_block}\n\n---\n" if hist_block else ""
 
@@ -409,7 +453,11 @@ def answer_with_sources(
         carry_info = f"Carryover docs used: {len(index_map) if follow_up_on else 0} / {carry_k if follow_up_on else 0}"
         hist_info  = f"History turns shown: {hist_turns if follow_up_on else 0}"
         meta_dump = f"— Meta —\n{carry_info}\n{hist_info}\n"
-        rew_dump  = f"— Original question —\n{original_q}\n\n— Spell-fixed —\n{question}\n"
+        rew_dump  = (
+            f"— Original question —\n{original_q}\n\n"
+            f"— Spell-fixed —\n{question}\n\n"
+            f"— Effective query (for retrieval) —\n{effective_query}\n"
+        )
         full_context_dump = f"— Full Context (as given to LLM) —\n{context_text}"
         debug_sections = "\n\n" + (topk_section + "\n\n" if topk_section else "") + meta_dump + rew_dump + "\n" + full_context_dump
 
