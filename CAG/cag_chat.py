@@ -1,77 +1,53 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-# run with: streamlit run .\cag_chat_prefill.py
+# run with: streamlit run ./cag_chat_hot.py
 
 import os, re, json
 from pathlib import Path
-from typing import List, Tuple, Dict, Any
+from typing import List, Tuple, Dict
 
 import numpy as np
 import torch
 import streamlit as st
 from transformers import AutoTokenizer, AutoModelForCausalLM
-from transformers.cache_utils import DynamicCache
 from sentence_transformers import SentenceTransformer
 
-# ===== Optional FAISS =====
+# ----- Optional FAISS -----
 try:
     import faiss
     HAS_FAISS = True
 except Exception:
     HAS_FAISS = False
 
-# ===== PyTorch 2.6: Safe globals (weights_only) =====
-from torch.serialization import add_safe_globals
-try:
-    # wir speichern keine Klassen mehr, aber erlauben vorsorglich
-    from transformers.cache_utils import DynamicLayer  # noqa
-    add_safe_globals([DynamicCache, DynamicLayer])
-except Exception:
-    pass
+# --------------- CONFIG ---------------
+CACHE_DIR        = "cag_cache"
+HF_MODEL_PATH    = "../Qwen2.5-0.5B-Instruct"
+TOP_K            = 3
+TEMPERATURE      = 0.0
+MAX_TOKENS       = 450
+SNIPPET_CHARS    = 900
+USE_FAISS        = True
 
-# =========================
-# CONFIG
-# =========================
-CACHE_DIR        = "cag_cache"                 # embeddings.npy, texts.jsonl, meta.jsonl, kv/
-HF_MODEL_PATH    = "../Qwen2.5-0.5B-Instruct"  # MUSS zum Build passen!
-
-TOP_K         = 3
-TEMPERATURE   = 0.0
-MAX_TOKENS    = 450
-SNIPPET_CHARS = 900
-USE_FAISS     = True
-
-SYSTEM_FALLBACK = (
-    "You are a precise assistant for enterprise knowledge.\n"
-    "Use only the provided context. If nothing relevant is found, reply exactly 'Not in context.'\n"
-)
-
-# =========================
-# UI
-# =========================
-st.set_page_config(page_title="Liebherr Chatbot (KV-CAG)", page_icon="🦚", layout="wide")
-st.title("🦚 CAG Chat – KV-Cache (Prefix-Reuse)")
-st.caption("Embed-Cache (semantische Suche) + KV-Cache (Prefill-Skip). Inline-Zitate & Debug wie gewohnt.")
+st.set_page_config(page_title="Liebherr Chatbot", page_icon="🦚", layout="wide")
+st.title("🦚 CAG Chat – Liebherr Software")
+st.caption("Cache-Augmented Generation (CAG) with a local embedding cache. It accesses cached enterprise knowledge from the [Confluence Software](https://helpd-doc.liebherr.com/spaces/SWEIG/pages/43424891/SW-Platform-Development+Home+E2020) space — by [Julian Lingnau](https://de.linkedin.com/in/julian-lingnau-05b623162).")
 
 with st.sidebar:
     st.subheader("Settings")
     st.text_input("Cache path", value=CACHE_DIR, disabled=True)
     st.text_input("Model", value=os.path.basename(HF_MODEL_PATH), disabled=True)
-
-    k          = st.slider("Top-K (semantic)", 1, 20, TOP_K, 1)
+    k          = st.slider("Top-K", 1, 20, TOP_K, 1)
     temp       = st.slider("Temperature", 0.0, 1.5, TEMPERATURE, 0.05)
     max_tokens = st.slider("Max new tokens", 64, 1024, MAX_TOKENS, 32)
     spellfix_active = st.toggle("Spell checker", value=True)
     debug_mode      = st.toggle("Further debugging", value=False)
 
-# =========================
-# Cache (embeddings, texts, metas)
-# =========================
+# --------------- Cache laden ---------------
 @st.cache_resource(show_spinner=True)
 def load_embed_cache(cache_dir: str):
     cdir = Path(cache_dir)
-    emb = np.load(cdir / "embeddings.npy", mmap_mode="r")
-    EMB = np.array(emb, dtype=np.float32, copy=True)
+    emb_mmap = np.load(cdir / "embeddings.npy", mmap_mode="r")
+    EMB = np.asarray(emb_mmap, dtype=np.float32)  # NumPy 2.x safe
 
     texts, metas = [], []
     with open(cdir / "texts.jsonl", "r", encoding="utf-8") as f:
@@ -90,22 +66,22 @@ def load_embed_cache(cache_dir: str):
             cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
         except Exception:
             cfg = {}
-    return EMB, texts, metas, cfg
+    hotset = []
+    hot_path = cdir / "kv_hotset.json"
+    if hot_path.exists():
+        try:
+            hotset = json.loads(hot_path.read_text(encoding="utf-8")).get("hot_chunk_ids", [])
+        except Exception:
+            hotset = []
+    return EMB, texts, metas, cfg, set(hotset)
 
-try:
-    EMB, TEXTS, METAS, CFG = load_embed_cache(CACHE_DIR)
-    n_chunks, dim = EMB.shape
-    st.info(f"📦 Cache: {n_chunks} Chunks • {dim}-D embeddings")
-except Exception as e:
-    st.error(f"Cache load error: {e}")
-    st.stop()
+EMB, TEXTS, METAS, CFG, HOTSET = load_embed_cache(CACHE_DIR)
+st.info(f"📦 Cache: {EMB.shape[0]} Chunks • {EMB.shape[1]}-D • Hot-Set: {len(HOTSET)}")
 
-# =========================
-# Similarity backend
-# =========================
+# --------------- Similarity backend ---------------
 def _faiss_backend(emb: np.ndarray):
     index = faiss.IndexFlatIP(emb.shape[1])
-    if HAS_FAISS and faiss.get_num_gpus() > 0:
+    if faiss.get_num_gpus() > 0:
         _ = faiss.StandardGpuResources()
         index = faiss.index_cpu_to_all_gpus(index)
     index.add(emb.astype(np.float32))
@@ -115,8 +91,9 @@ def _faiss_backend(emb: np.ndarray):
     return _search
 
 def _numpy_backend(emb: np.ndarray):
+    emb_local = emb
     def _search(qv: np.ndarray, top_k: int):
-        s = emb @ qv
+        s = emb_local @ qv
         topk = min(top_k, s.shape[0])
         idx = np.argpartition(-s, topk - 1)[:topk]
         idx = idx[np.argsort(-s[idx])]
@@ -130,69 +107,75 @@ def get_search_backend(emb: np.ndarray):
     return _numpy_backend(emb), "NumPy"
 
 SEARCH, BACKEND = get_search_backend(EMB)
-st.caption(f"Similarity backend: **{BACKEND}** • Metric: **cosine**")
+st.caption(f"Similarity backend: **{BACKEND}** • Metric: cosine")
 
-# =========================
-# Query encoder
-# =========================
+# --------------- Query encoder (wie Build) ---------------
 @st.cache_resource(show_spinner=True)
 def load_query_encoder(name: str) -> SentenceTransformer:
-    return SentenceTransformer(name)
+    return SentenceTransformer(name, device="cuda")
 
 embed_model_name = CFG.get("embed_model", "sentence-transformers/all-MiniLM-L6-v2")
 query_encoder = load_query_encoder(embed_model_name)
 
 def encode_query(q: str) -> np.ndarray:
+    # mit device="cuda" ist das trotzdem ok – .encode nutzt GPU
     v = query_encoder.encode([q], convert_to_numpy=True, normalize_embeddings=True)[0]
     return v.astype(np.float32)
 
-# =========================
-# LLM + Tok
-# =========================
+# --------------- LLM + Tokenizer ---------------
 @st.cache_resource(show_spinner=True)
 def load_llm(model_path: str):
     tok = AutoTokenizer.from_pretrained(model_path, use_fast=True, local_files_only=True, trust_remote_code=True)
     mdl = AutoModelForCausalLM.from_pretrained(
-        model_path, device_map="auto", dtype="auto", local_files_only=True, trust_remote_code=True
-    )
-    mdl.eval()
+        model_path, device_map="auto", torch_dtype="auto", local_files_only=True, trust_remote_code=True
+    ).eval()
     return tok, mdl
 
 tok, mdl = load_llm(HF_MODEL_PATH)
+MODEL_DEVICE = next(mdl.parameters()).device
+MODEL_DTYPE  = next(mdl.parameters()).dtype
 
-# =========================
-# KV Laden (Liste -> DynamicCache auf richtigem Device/Dtype)
-# =========================
-def _kv_list_to_dynamic_cache(kv_list_cpu_fp16: List[Tuple[torch.Tensor, torch.Tensor]],
-                              device: torch.device,
-                              dtype: torch.dtype) -> DynamicCache:
-    kv_norm = []
-    for (k, v) in kv_list_cpu_fp16:
-        kv_norm.append((
-            k.to(device=device, dtype=dtype, non_blocking=True),
-            v.to(device=device, dtype=dtype, non_blocking=True),
+# --------------- KV Laden/Mappen ---------------
+def _map_legacy_to_device_dtype(kv_legacy: List[Tuple[torch.Tensor, torch.Tensor]]):
+    out = []
+    for k, v in kv_legacy:
+        out.append((
+            k.to(device=MODEL_DEVICE, dtype=MODEL_DTYPE, non_blocking=True),
+            v.to(device=MODEL_DEVICE, dtype=MODEL_DTYPE, non_blocking=True),
         ))
-    return DynamicCache.from_legacy_cache(kv_norm)
+    return out
 
 @st.cache_resource(show_spinner=False)
-def load_chunk_kv(cache_dir: str, chunk_id: str) -> DynamicCache:
+def load_chunk_kv_legacy(cache_dir: str, chunk_id: str):
     path = Path(cache_dir) / "kv" / f"{chunk_id}.pt"
-    # sichere Loads (PyTorch 2.6): wir haben nur Tensoren gespeichert (weights_only=True möglich)
     try:
         obj = torch.load(path, map_location="cpu", weights_only=True)
     except TypeError:
         obj = torch.load(path, map_location="cpu")
     except Exception:
         obj = torch.load(path, map_location="cpu", weights_only=False)
+    kv_legacy = obj["kv_legacy"]
+    seq_len   = int(obj["seq_len"])
+    return kv_legacy, seq_len
 
-    kv_list = obj["kv_list_cpu_fp16"]  # list[(k,v)] in CPU/fp16
-    device = next(mdl.parameters()).device
-    dtype  = next(mdl.parameters()).dtype
-    return _kv_list_to_dynamic_cache(kv_list, device, dtype)
+# Hot-Set KV in RAM/VRAM vorladen (dict: chunk_id -> mapped legacy list)
+@st.cache_resource(show_spinner=True)
+def warm_hotset(cache_dir: str, hot_ids: set):
+    table: Dict[str, List[Tuple[torch.Tensor, torch.Tensor]]] = {}
+    loaded = 0
+    for cid in hot_ids:
+        try:
+            kv_legacy, _ = load_chunk_kv_legacy(cache_dir, cid)
+            table[cid] = _map_legacy_to_device_dtype(kv_legacy)
+            loaded += 1
+        except Exception:
+            pass
+    return table, loaded
 
-# =========================
-# Helpers (Anzeige & Zitate)
-# =========================
+HOT_KV, HOT_LOADED = warm_hotset(CACHE_DIR, HOTSET)
+st.success(f"🔥 Hot-Set geladen: {HOT_LOADED}/{len(HOTSET)} KV-Chunks im Speicher")
+
+# --------------- Helper (Quellen/Anzeige) ---------------
 RE_CIT = re.compile(r"\[(\d+)\]")
 
 def canonicalize_url(u: str) -> str:
@@ -200,7 +183,7 @@ def canonicalize_url(u: str) -> str:
     u = u.strip().split("#")[0]
     return u[:-1] if u.endswith("/") else u
 
-def format_context(idxs: List[int], scores: List[float]) -> Tuple[str, List[Tuple[int, str, str, float]]]:
+def format_context(idxs: List[int], scores: List[float]):
     lines, index_map = [], []
     for rank, (i, sc) in enumerate(zip(idxs, scores), start=1):
         meta = METAS[i] if i < len(METAS) else {}
@@ -213,10 +196,6 @@ def format_context(idxs: List[int], scores: List[float]) -> Tuple[str, List[Tupl
         index_map.append((rank, title, url, float(sc)))
     return "\n".join(lines), index_map
 
-def extract_answer_block(full_text: str) -> str:
-    m = re.search(r"Answer:\s*(.*)", full_text, re.DOTALL | re.IGNORECASE)
-    return m.group(1).strip() if m else full_text.strip()
-
 def remove_invalid_citations(text: str, valid_indices: set) -> str:
     used = {int(x) for x in RE_CIT.findall(text)}
     invalid = used - valid_indices
@@ -224,9 +203,7 @@ def remove_invalid_citations(text: str, valid_indices: set) -> str:
         text = re.sub(rf"(?<!\d)\[{i}\](?!\d)", "", text)
     return re.sub(r"\s{2,}", " ", text).strip()
 
-# =========================
-# Spellfix (ohne Paraphrase)
-# =========================
+# --------------- Spellfix (optional, kurz) ---------------
 def _spellfix_llm(text: str) -> str:
     try:
         prompt = (
@@ -236,32 +213,26 @@ def _spellfix_llm(text: str) -> str:
             f"Text: {text}\n\nCorrected:"
         )
         with torch.no_grad():
-            dev = next(mdl.parameters()).device
             out = mdl.generate(
-                **tok(prompt, return_tensors="pt").to(dev),
-                max_new_tokens=64,
-                do_sample=False,
-                temperature=0.0,
+                **tok(prompt, return_tensors="pt").to(MODEL_DEVICE),
+                max_new_tokens=64, do_sample=False, temperature=0.0,
                 pad_token_id=tok.eos_token_id
             )
         s = tok.decode(out[0], skip_special_tokens=True)
-        s = s.split("Corrected:")[-1].strip() or text
-        return s
+        return s.split("Corrected:")[-1].strip() or text
     except Exception:
         return text
 
-# =========================
-# Generation mit KV (Prefill-Skip)
-# =========================
-def generate_with_kv(question: str, kv_cache: DynamicCache, max_new_tokens: int, temperature: float) -> str:
-    device = next(mdl.parameters()).device
+# --------------- KV-gestützte Generation (legacy list[(k,v)]) ---------------
+def generate_with_kv(question: str, kv_legacy_mapped: List[Tuple[torch.Tensor, torch.Tensor]],
+                     max_new_tokens: int, temperature: float) -> str:
     tail = question + "\n\nAnswer:"
-    tail_ids = tok(tail, return_tensors="pt", add_special_tokens=False).input_ids.to(device)
+    tail_ids = tok(tail, return_tensors="pt", add_special_tokens=False).input_ids.to(MODEL_DEVICE)
 
     with torch.no_grad():
-        out = mdl(input_ids=tail_ids, past_key_values=kv_cache, use_cache=True, return_dict=True)
+        out = mdl(input_ids=tail_ids, past_key_values=kv_legacy_mapped, use_cache=True, return_dict=True)
         logits = out.logits[:, -1, :]
-        past   = out.past_key_values
+        past  = out.past_key_values  # legacy list bleibt kompatibel
 
     def _next_token(logits_tensor):
         if temperature and temperature > 0.0:
@@ -269,8 +240,7 @@ def generate_with_kv(question: str, kv_cache: DynamicCache, max_new_tokens: int,
             return torch.multinomial(probs, num_samples=1)
         return torch.argmax(logits_tensor, dim=-1, keepdim=True)
 
-    generated = []
-    cur_ids = None
+    generated, cur_ids = [], None
     for _ in range(max_new_tokens):
         with torch.no_grad():
             if cur_ids is None:
@@ -288,56 +258,54 @@ def generate_with_kv(question: str, kv_cache: DynamicCache, max_new_tokens: int,
 
     return tok.decode(generated, skip_special_tokens=True)
 
-# =========================
-# QA-Pipeline
-# =========================
+# --------------- QA-Pipeline (Hot-Set First) ---------------
 def answer_with_sources(question: str, top_k: int, debug: bool) -> str:
     original_q = question
     if spellfix_active:
         question = _spellfix_llm(question)
 
-    # (1) semantische Suche
-    qv = query_encoder.encode([question], convert_to_numpy=True, normalize_embeddings=True)[0].astype(np.float32)
+    qv = encode_query(question)
     scores, idxs = SEARCH(qv, top_k=max(top_k, 6))
     idxs, scores = idxs[:top_k], scores[:top_k]
-
     if not idxs:
         return "Not in context."
-    best_idx = idxs[0]
-    meta = METAS[best_idx]
-    chunk_id = meta["chunk_id"]
 
-    # (2) KV laden -> DynamicCache (richtiges Device/Dtype)
-    kv_cache = load_chunk_kv(CACHE_DIR, chunk_id)
+    # 1) bevorzugt Chunks aus dem Hot-Set nutzen (0-I/O)
+    best_idx = None
+    for i in idxs:
+        if METAS[i]["chunk_id"] in HOT_KV:
+            best_idx = i; break
+    if best_idx is None:
+        best_idx = idxs[0]
 
-    # (3) Kontextanzeige
+    cid = METAS[best_idx]["chunk_id"]
+    if cid in HOT_KV:
+        kv = HOT_KV[cid]
+    else:
+        # einmalig von Disk holen (kalter Pfad)
+        kv_legacy, _ = load_chunk_kv_legacy(CACHE_DIR, cid)
+        kv = _map_legacy_to_device_dtype(kv_legacy)
+
     context_text, index_map = format_context(idxs, scores)
     valid_indices = {i for i, *_ in index_map}
 
-    # (4) Generieren (Prefill-Skip)
-    answer = generate_with_kv(question, kv_cache, max_tokens, temp).strip()
-    if answer.lower() == "not in context.":
+    ans = generate_with_kv(question, kv, max_tokens, temp).strip()
+    if ans.lower() == "not in context.":
         return "Not in context."
 
-    # (5) Zitate & Quellen
-    if "[1]" not in answer:
-        answer = re.sub(r"([.!?])(\s|$)", r" [1]\1\2", answer, count=1)
-    answer = remove_invalid_citations(answer, valid_indices)
+    if "[1]" not in ans:
+        ans = re.sub(r"([.!?])(\s|$)", r" [1]\1\2", ans, count=1)
+    ans = remove_invalid_citations(ans, valid_indices)
 
-    lines = []
-    for idx, title, url, _ in index_map:
-        url = canonicalize_url(url)
-        lines.append(f"- [{idx}] {title}: {url}")
+    lines = [f"- [{idx}] {title}: {canonicalize_url(url)}" for idx, title, url, _ in index_map]
     sources = "Sources used:\n\n" + "\n".join(lines)
 
     if debug:
-        dbg = f"\n\n— Full Context (as given to LLM) —\n{context_text}\n\n— Original —\n{original_q}\n— Spell-fixed —\n{question}"
-        return f"{answer}\n\n{sources}{dbg}"
-    return f"{answer}\n\n{sources}"
+        dbg = f"\n\n— Full Context —\n{context_text}\n\n— Original —\n{original_q}\n— Spell-fixed —\n{question}"
+        return f"{ans}\n\n{sources}{dbg}"
+    return f"{ans}\n\n{sources}"
 
-# =========================
-# Chat UI
-# =========================
+# --------------- Chat UI ---------------
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
@@ -350,18 +318,12 @@ if user_q:
     st.session_state.messages.append({"role": "user", "content": user_q})
     with st.chat_message("user"):
         st.write(user_q)
-
     with st.chat_message("assistant"):
-        with st.spinner("Loading KV & generating …"):
+        with st.spinner("Hot-Set KV & generating …"):
             try:
-                ans = answer_with_sources(
-                    question=user_q,
-                    top_k=k,
-                    debug=debug_mode,
-                )
+                ans = answer_with_sources(user_q, k, debug_mode)
             except Exception as e:
                 st.error(f"Error: {e}")
                 st.stop()
             st.write(ans)
-
     st.session_state.messages.append({"role": "assistant", "content": ans})
