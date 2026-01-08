@@ -3,6 +3,12 @@
 Masterarbeit:  
 **„Finetuning, RAG und CAG: Techniken zur Einbindung interner Wissensdaten in LLM-basierte Chatbots“**
 
+
+Alle Informationen, Methoden und ergänzende Materialien zu meiner Masterarbeit sind auf **ResearchGate** verfügbar.  
+Hier geht’s direkt zur Publikation:  
+[Finetuning RAG und CAG Techniken zur Einbindung interner Wissensdaten in LLM-basierte Chatbots](https://www.researchgate.net/publication/399530401_Finetuning_RAG_und_CAG_Techniken_zur_Einbindung_interner_Wissensdaten_in_LLM-basierte_Chatbots)
+
+
 Dieses Repository enthält alle Skripte, um lokale LLM-Chatbots mit internen Wissensdaten aufzubauen und zu evaluieren:
 
 - **Finetuning** eines Basismodells auf Liebherr-spezifische QA-Daten
@@ -40,7 +46,10 @@ Diese bei Bedarf zusätzlich installieren.
 
 ## 2. Datenpipeline: Confluence → „canonical“ JSONL → Fine-tune/RAG/CAG
 
-Alle Methoden (Finetuning, RAG, CAG) basieren auf denselben aufbereiteten Confluence-Daten.
+Nachfolgend werden die Firmeninternen Daten angereichert und verarbeitet. Alles findet in Confluence statt - die Seiten und Unterseiten eines Bereichs werden dabei komplett in der Baumhierarchie durchsucht und gespeichert. Danach bearbeiten weitere Skripte die gefundenen Dateien z. B. Pdfs oder Bilder.
+
+
+Alle Methoden (Finetuning, RAG, CAG) basieren auf denselben aufbereiteten Confluence-Daten. Das wichtigste ist zunächst einen Zugang also Account für Confluence für die Datensammlung zu deklarieren. Dazu bitte in Order: WikiExtraction/.env die Nutzerdaten anpassen. Achtung - Diese werden automatisch im gitignore für späteren Upload ignoriert und sollen nie online committed & gepushed werden.
 
 ### 2.1 Confluence-Daten abrufen (WikiExtraction)
 
@@ -102,6 +111,7 @@ Verzeichnis: [WikiExtraction](WikiExtraction/)
    → Basis für **Finetuning**, **RAG** und **CAG**.
 
 ---
+Nachfolgend wird 3. Finetuning und 5. CAG erklärt aber da durch die Arbeit bewiesen wurde das für uns 4. RAG die beste Methode für Chatbots ist - kann direkt zu RAG gesprungen werden. 
 
 ## 3. Finetuning
 
