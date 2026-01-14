@@ -29,7 +29,7 @@ MAX_TOKENS    = 450
 SNIPPET_CHARS = 900
 
 # ---- Quantifizierte Einstellungen GGUF ----
-USE_GGUF        =  # True = ungenauer und Antwortqualität leidet under GGUF
+USE_GGUF        =  False # True = ungenauer und Antwortqualität leidet under GGUF
 GGUF_MODEL_PATH = "../FinetuneLLM/finetunedmodels/QWENTest/Qwen2.5-1.5B-Instruct-lora-unsloth-liebherr-2ep_var5-out/gguf/Qwen2.5-1.5B-Instruct-lora-unsloth-liebherr-2ep_var5.gguf"  # Quantifiziertes Modell
 N_CTX           = 8192   # je nach Bedarf/VRAM
 N_GPU_LAYERS    = -1     # -1 = max. Offload auf CUDA (GPU) wenn man es anpasst, verteilt es sich dann perfekt auf CPU/GPU auf
