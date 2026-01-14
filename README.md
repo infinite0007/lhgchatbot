@@ -26,6 +26,15 @@ Obsolete/alte Skripte sind im Repo belassen, können aber ignoriert werden, wenn
 - `pip` für Python-Pakete
 - (Optional, empfohlen) CUDA-fähige GPU + passender NVIDIA-Treiber
 
+### Nvidia Cuda (GPU Fähigkeit)
+Wichtig zudem ist es, für die Projekt eine Nvidia GPU zu besitzen. Nachfolgendes Nvidia Toolkit ist deshalb absolut erforderlich:
+
+https://developer.nvidia.com/cuda-12-8-0-download-archive
+
+Es wird empfohlen immer die aktuelle Version herunterzuladen. 
+
+noch vor nachfolgender requirementsinstallation sollte die torch Version: torch==2.8.0+cu128 die der Cuda Version des Toolkits angepasst werden. In diesem Fall entspricht cu128 der Cuda Version 12.8.
+
 ### Installation der Python-Abhängigkeiten
 
 Im Verzeichnis `lhgchatbot/`:
@@ -40,7 +49,9 @@ Einige Teilmodule haben eigene `requirements.txt`, z.B.:
 - [RAG/requirements.txt](RAG/requirements.txt)
 - [WikiExtraction/requirement.txt](WikiExtraction/requirement.txt)
 
-Diese bei Bedarf zusätzlich installieren.
+Diese sorgen dafür, dass das Projekt die richtigen Python pakete installier um volle funktionsfähigkeit zu gewährleisten. Pakete die Python mit pip installieren sollte mittels:
+
+pip install -r requirements.txt
 
 Ebenso wird ein Modell in unserem Fall der Sieger: Qwen2.5-1.5B-Instruct benötigt.
 
@@ -60,16 +71,14 @@ git -c http.sslVerify=false clone https://huggingface.co/Qwen/Qwen2.5-1.5B-Instr
 
 Danach kann das Modell für Finetuning, Rag & Cag genutzt werden.
 
+### WikiExtraction
+Um die Confluence Datenextraktion zu gewährleisten müssen die Nutzerdaten mit E-Mail & Passwort in eine gesicherte .env Datei abgelegt werden. Zu diesem Zeitpunkt der Erstellung hatte es nur mit dieser - nicht aber mit der Tokenmethode funktioniert.
 
-Wichtig zudem ist es für die Schnelligkeit wichtig für diese Projekt eine Nvidia GPU zu besitzen. Nachfolgendes Nvidia Toolkit ist deshalb absolut erforderlich:
+Diese .env wird von gitignore ignoriert und sollte deswegen auch nicht online landen.
 
-https://developer.nvidia.com/cuda-12-8-0-download-archive
+Diese befindet sich im Verzeichnis `WikiExtraction/.env`:
 
-Es wird empfohlen immer die aktuelle Version herunterzuladen. Außerdem sollte die requirements.txt also die Pakete die Python mit pip installieren sollte mittels:
 
-pip install -r requirements.txt
-
-noch davor die torch Version: torch==2.8.0+cu128 die Cuda Version des Toolkits angepasst werden. In diesem Fall entspricht cu128 der Cuda Version 12.8.
 
 ---
 
