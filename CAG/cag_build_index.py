@@ -19,7 +19,7 @@ DEFAULT_CHUNK_SIZE     = 1000
 DEFAULT_CHUNK_OVERLAP  = 200
 DEFAULT_BATCH_SIZE     = 256
 DEFAULT_MAX_DOCS       = 2_000_000
-DEFAULT_HF_MODEL       = "../Qwen2.5-0.5B-Instruct"
+DEFAULT_HF_MODEL       = "../Qwen2.5-1.5B-Instruct"
 DEFAULT_HOTSET_N       = 1024   # wie viele Chunks beim Serverstart vorladen
 
 SYSTEM_PROMPT = (

@@ -20,9 +20,9 @@ except Exception:
     HAS_FAISS = False
 
 # --------------- CONFIG ---------------
-CACHE_DIR        = "cag_cache"
-HF_MODEL_PATH    = "../Qwen2.5-0.5B-Instruct"
-TOP_K            = 3
+CACHE_DIR        = "cag_cache1.5b"
+HF_MODEL_PATH    = "../Qwen2.5-1.5B-Instruct"
+TOP_K            = 6
 TEMPERATURE      = 0.0
 MAX_TOKENS       = 450
 SNIPPET_CHARS    = 900

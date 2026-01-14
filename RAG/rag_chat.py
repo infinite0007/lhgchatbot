@@ -20,17 +20,17 @@ from sentence_transformers import SentenceTransformer
 DATABASE_LOCATION = "chroma_db"
 COLLECTION_NAME   = "rag_data"
 EMBEDDING_MODEL   = "sentence-transformers/all-MiniLM-L6-v2"
-HF_MODEL_PATH     = "../gemma-3-4b-Instruct"
+HF_MODEL_PATH     = "../Qwen2.5-1.5B-Instruct"
 
 TOP_K         = 6
 USE_MMR       = False # https://www.evidentlyai.com/ranking-metrics/mean-reciprocal-rank-mrr
-TEMPERATURE   = 0.1
+TEMPERATURE   = 0.0
 MAX_TOKENS    = 450
 SNIPPET_CHARS = 900
 
 # ---- Quantifizierte Einstellungen GGUF ----
-USE_GGUF        = False # True = ungenauer und Antwortqualität leidet under GGUF
-GGUF_MODEL_PATH = "../gemma-3-4b-Instruct/GGUF/gemma3-4b-instruct.gguf"  # Quantifiziertes Modell
+USE_GGUF        =  # True = ungenauer und Antwortqualität leidet under GGUF
+GGUF_MODEL_PATH = "../FinetuneLLM/finetunedmodels/QWENTest/Qwen2.5-1.5B-Instruct-lora-unsloth-liebherr-2ep_var5-out/gguf/Qwen2.5-1.5B-Instruct-lora-unsloth-liebherr-2ep_var5.gguf"  # Quantifiziertes Modell
 N_CTX           = 8192   # je nach Bedarf/VRAM
 N_GPU_LAYERS    = -1     # -1 = max. Offload auf CUDA (GPU) wenn man es anpasst, verteilt es sich dann perfekt auf CPU/GPU auf
 N_THREADS       = os.cpu_count() or 8

@@ -26,9 +26,9 @@ from transformers import (
 # ------------------------------
 # Konfiguration
 # ------------------------------
-BASE_MODEL = os.environ.get("BASE_MODEL", "../Falcon3-1B-Base")
-DATA_PATH = os.environ.get("DATA_PATH", "../WikiExtraction/data/derivatives/io_dataset.jsonl")  # unterstützt .json oder .jsonl
-OUTPUT_DIR = os.environ.get("OUTPUT_DIR", "finetunedmodels/Falcon3-1B-Base-lora-unsloth-liebherr-2ep-out")
+BASE_MODEL = os.environ.get("BASE_MODEL", "../Qwen2.5-7B-Instruct")
+DATA_PATH = os.environ.get("DATA_PATH", "../WikiExtraction/data/derivatives/io_dataset_var5.jsonl")  # unterstützt .json oder .jsonl
+OUTPUT_DIR = os.environ.get("OUTPUT_DIR", "finetunedmodels/QWENTest/Qwen2.5-7B-Instruct-lora-unsloth-liebherr-2ep_var5-out")
 
 #DATA_PATH = os.environ.get("DATA_PATH", r"C:\Users\lhglij1\OneDrive - Liebherr\Desktop\Master\lhgchatbot\WikiExtraction\data\derivatives\qa_dataset.jsonl")
 #OUTPUT_DIR = os.environ.get("OUTPUT_DIR", "finetunedmodels/Falcon3-1B-Base-lora-unsloth-liebherrqa-out")

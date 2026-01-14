@@ -44,7 +44,11 @@ AUSGABE (NDJSON, eine Zeile pro INPUT→OUTPUT-Variante):
       triples_in_facet, triples_in_entity,
       insufficient_evidence (optional), conflict_notes (optional)
 
-BEISPIEL:
+# Erstellt Q/A Paare für Finetuning als Datensatz aus Confluence-Seiten.
+# Zuerst muss LLAMA gebaut oder als Release vorliegen (https://github.com/ggml-org/llama.cpp), da wir CUDA benutzen ist es wichtig nicht nur die llama-b5921XXX-bin-win-cpu-x64 sondern eben die korrekte cuda Version: llama-b6730XXX-bin-win-cuda-12.4-x64.zip sowie cudart-llama-bin-win-cuda-12.4-x64.zip alles im Ordner zusammenführen (wichtig CUDA Toolkit bei mir 13.0.1 installiert haben)
+# Dann kann der Server gestartet werden im LLAMA Ordner mit: llama-server.exe -m "C:\\Users\\lhglij1\\OneDrive - Liebherr\\Desktop\\Master\\lhgchatbot\\gemma-3-12b-instruct-gguf\\gemma-3-it-12B-Q6_K.gguf" -c 4096 -ngl 999 --device CUDA0 --flash-attn on -b 640 -ub 160 -ctk q8_0 -ctv q8_0 --chat-template gemma --alias gemma-3-12b-instruct --host 127.0.0.1 --port 8080
+# Falls ohne GPU das --device raus löschen. Um zu schauen welches Device man hat kann man das auch herausfinden mit: llama-server --list-devices
+# Beispielaufruf um Fragen an die KI zu senden und genereren:
   python make_io_dataset_kg.py --input data/derivatives/joined_pages_full.jsonl --out data/derivatives/io_dataset.jsonl --endpoint http://127.0.0.1:8080/v1/chat/completions --model gemma-3-12b-instruct --kg-out data/derivatives/kg_triples.jsonl --top-entities 0 --facet-split --min-triples-per-entity 1 --min-triples-per-facet 1 --outputs-per-entity 0 --variants-per-output 10 --generator-temperature 0.2
 
   python make_io_dataset_kg.py \
