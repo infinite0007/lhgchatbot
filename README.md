@@ -42,6 +42,35 @@ Einige Teilmodule haben eigene `requirements.txt`, z.B.:
 
 Diese bei Bedarf zusätzlich installieren.
 
+Ebenso wird ein Modell in unserem Fall der Sieger: Qwen2.5-1.5B-Instruct benötigt.
+
+Dieser wird im Hauptordner neben den anderen RAG/CAG/FinetuneLLM geclont. Dazu nachfolgendes ausführen:
+
+Im Verzeichnis `lhgchatbot/`:
+
+```bash
+git clone https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct
+```
+
+sollte dies zu Unternehmensnetzblockierungen kommen sollte SSL kurzzeitig deaktiviert werden mittels:
+
+```bash
+git -c http.sslVerify=false clone https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct
+```
+
+Danach kann das Modell für Finetuning, Rag & Cag genutzt werden.
+
+
+Wichtig zudem ist es für die Schnelligkeit wichtig für diese Projekt eine Nvidia GPU zu besitzen. Nachfolgendes Nvidia Toolkit ist deshalb absolut erforderlich:
+
+https://developer.nvidia.com/cuda-12-8-0-download-archive
+
+Es wird empfohlen immer die aktuelle Version herunterzuladen. Außerdem sollte die requirements.txt also die Pakete die Python mit pip installieren sollte mittels:
+
+pip install -r requirements.txt
+
+noch davor die torch Version: torch==2.8.0+cu128 die Cuda Version des Toolkits angepasst werden. In diesem Fall entspricht cu128 der Cuda Version 12.8.
+
 ---
 
 ## 2. Datenpipeline: Confluence → „canonical“ JSONL → Fine-tune/RAG/CAG
